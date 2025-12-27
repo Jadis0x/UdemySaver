@@ -1,2 +1,29 @@
-/.vs
-/out
+# Build artifacts
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Settings with tokens (security)
+settings.ini
+**/settings.ini
+
+# macOS
+.DS_Store
+._*
+
+# Temporary files
+*.tmp
+*.part
+downloads/
