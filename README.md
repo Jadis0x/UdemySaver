@@ -11,7 +11,6 @@ A built-in HTTP server powers a responsive web interface so you can browse your 
 
 ## Showcase
 ![Course library view](app_showcase/App_Screenshot_2.png)
-![App Settings](app_showcase/App_Screenshot_1.png)
 
 # Requirements
 | Tool/Library           | Notes                     |
