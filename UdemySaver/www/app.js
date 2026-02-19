@@ -1,4 +1,5 @@
 const $ = s => document.querySelector(s);
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function getJSON(url){
 try{
 const r = await fetch(url);
@@ -219,17 +220,20 @@ qTick(true);
 /* ===== courses ===== */
 async function loadPage(p=1){
 state.page = Math.max(1, p|0);
-const data = await getJSON(`/courses?page=${state.page}&page_size=${state.page_size}`);
-state.total = data.total || 0;
-state.auth = data.auth ?? state.auth;
-state.items = Array.isArray(data.courses) ? data.courses : (data.results || []);
-if (countInfo) countInfo.textContent = state.total ? `(${state.total} ${t('library.count_suffix')})` : '';
-renderGrid(); renderPager();
+  const q = state.filter ? encodeURIComponent(state.filter) : '';
+  const data = await getJSON(`/courses?page=${state.page}&page_size=${state.page_size}&search=${q}`);
+
+  state.total = data.total || 0;
+  state.auth = data.auth ?? state.auth;
+  state.items = Array.isArray(data.courses) ? data.courses : (data.results || []);
+
+  if (countInfo) countInfo.textContent = state.total ? `(${state.total} ${t('library.count_suffix')})` : '';
+  renderGrid(); 
+  renderPager();
 }
 function renderGrid(){
 if(!grid) return; grid.innerHTML = '';
-const f = (state.filter||'').trim().toLowerCase();
-let items = state.items; if(f) items = items.filter(c => (c.title||'').toLowerCase().includes(f));
+let items = state.items;
 if(items.length===0){ grid.innerHTML=`<div class="empty">${t('grid.empty')}</div>`; return; }
 
 for(const c of items){
@@ -276,11 +280,16 @@ function showBusy(msgKey='queue.collecting'){
     const e=$('#qRunning');
     if(e) e.innerHTML = `<i class="spin"></i>${t(msgKey)}`;
 }
-function setBusyTextTextual(text){
-    const e=$('#qRunning');
+function setBusyTextTextual(text, subtext = ""){
+    const e = $('#qRunning');
     if(e){
         if(qPill) qPill.style.display='';
-        e.innerHTML = `<i class="spin"></i>${text}`;
+        let html = `<i class="spin"></i> ${text}`;
+        if(subtext) {
+            if (subtext.length > 35) subtext = subtext.substring(0, 32) + '...';
+            html += ` <span style="opacity: 0.7; margin-left: 5px; font-weight: normal;"> - ${subtext}</span>`;
+        }
+        e.innerHTML = html;
     }
 }
 function setBusyText(msgKey){
@@ -389,84 +398,123 @@ return null;
 
 /* ===== enqueue ===== */
 async function enqueueLecture(course, lecture, idxInCourse, pref="720", opts={}){ 
-const asset = lecture && lecture.asset; 
-if(!asset || asset.asset_type!=='Video') return {skipped:true}; 
-const picked = pickVideoSource(asset, pref); 
-if(!picked) return {skipped:true}; 
+    const asset = lecture && lecture.asset; 
+    if(!asset || asset.asset_type!=='Video') return {skipped:true}; 
+    const picked = pickVideoSource(asset, pref); 
+    if(!picked) return {skipped:true}; 
 
-const base = { 
-course_id:course.id, course_title:course.title, 
-section_index:lecture.section_index||0, section_title:lecture.section_title||'', 
-lecture_index:idxInCourse, lecture_title:lecture.title||'', 
-lecture_id: lecture.id 
-}; 
+    const base = { 
+        course_id:course.id, course_title:course.title, 
+        section_index:lecture.section_index||0, section_title:lecture.section_title||'', 
+        lecture_index:idxInCourse, lecture_title:lecture.title||'', 
+        lecture_id: lecture.id 
+    }; 
 
-const videoPayload = {...base, url:picked.url, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)}-${picked.label}.mp4`}; 
-let r = await fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(videoPayload)}); 
-let data = await r.json().catch(()=>({ok:false}));
-if(data.skipped){
-    if(data.reason==='exists') toast(t('toast.exists',{title: lecture.title}));
-    else if(data.reason==='queued') toast(t('toast.queued',{title: lecture.title}));
-}
+    const videoPayload = {...base, url:picked.url, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)}-${picked.label}.mp4`}; 
+    let r = await fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(videoPayload)}); 
+    let data = await r.json().catch(()=>({ok:false}));
+    
+    if(data.skipped){
+        if(data.reason==='exists') toast(t('toast.exists',{title: lecture.title}));
+        else if(data.reason==='queued') toast(t('toast.queued',{title: lecture.title}));
+    }
 
-if(opts.subs && Array.isArray(asset.captions)){ 
-for(const cap of asset.captions){ 
-const url = cap.url || cap.file || cap.src; if(!url) continue; 
-const lang = safe(cap.language || cap.label || 'sub'); 
-const ext = (url.split(/[#?]/)[0].split('.').pop()||'vtt'); 
-const p = {...base, url, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)}.${lang}.${ext}`}; 
-await fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}); 
-} 
-} 
+    if(opts.subs && Array.isArray(asset.captions)){ 
+        for(const cap of asset.captions){ 
+            const url = cap.url || cap.file || cap.src; if(!url) continue; 
+            const lang = safe(cap.language || cap.label || 'sub'); 
+            const ext = (url.split(/[#?]/)[0].split('.').pop()||'vtt'); 
+            const p = {...base, url, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)}.${lang}.${ext}`}; 
+            await fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}); 
+            await delay(50); 
+        } 
+    } 
 
-if(opts.assets && Array.isArray(lecture.supplementary_assets)){
-for(const a of lecture.supplementary_assets){
-const name = a.filename ? a.filename : `${safe(a.title||'asset')}`;
-let url = '';
-if(a.download_urls){
-for(const k in a.download_urls){
-const arr = a.download_urls[k];
-if(Array.isArray(arr) && arr.length){
-url = arr[0].file || arr[0].url || '';
-if(url) break;
-}
-}
-}
-if(!url) continue;
-const p = {...base, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)} - ${sanitizeFilename(name)}`, asset_id:a.id, url};
-await fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
-}
-}
-return data; 
+    if(opts.assets && Array.isArray(lecture.supplementary_assets)){
+        for(const a of lecture.supplementary_assets){
+            const name = a.filename ? a.filename : `${safe(a.title||'asset')}`;
+            let url = '';
+            if(a.download_urls){
+                for(const k in a.download_urls){
+                    const arr = a.download_urls[k];
+                    if(Array.isArray(arr) && arr.length){
+                        url = arr[0].file || arr[0].url || '';
+                        if(url) break;
+                    }
+                }
+            }
+            if(!url) continue;
+            const p = {...base, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)} - ${sanitizeFilename(name)}`, asset_id:a.id, url};
+            await fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
+            await delay(200); 
+        }
+    }
+    return data; 
 }
 
 async function queueWholeCourse(course, preference="720"){ 
 const opts = {subs: userOpts.subs, assets: userOpts.assets};
-showBusy('queue.collecting'); 
-try{ 
-toast(t('toast.collecting',{title: course.title||'Course'})); 
-let page=1, knownTotal=null, seen=0, added=0, skipped=0, exists=0; 
-while(true){ 
-const j = await getJSON(`/lectures?course_id=${course.id}&page=${page}`); 
-if(knownTotal==null) knownTotal = (j && Number.isFinite(j.count)) ? (j.count|0) : null; 
-const chunk = Array.isArray(j.results) ? j.results : []; 
-if(chunk.length===0) break; 
-for(const lec of chunk){ 
-seen++; setBusyTextTextual(`${seen}/${knownTotal ?? '…'}`); 
-if(!lec || !lec.asset || lec.asset.asset_type!=='Video'){ skipped++; continue; } 
-const res = await enqueueLecture(course, lec, seen, preference, opts); 
-if(res && res.skipped && res.reason==='exists') exists++; 
-else if(res && res.ok) added++; 
-else skipped++; 
-if(seen%8===0) qTick(true); 
-} 
-if(j.next) page++; else break; 
-} 
-qTick(true); 
-toast(t('toast.added_summary', {added, seen, skipped, exists})); 
-if(added===0 && exists>0 && skipped===0) toast(t('toast.course_done',{title: course.title})); 
-ensureCourseSize(course.id, preference); 
-} finally { hideBusy(); } 
+    showBusy('queue.collecting'); 
+    try{ 
+        toast(t('toast.collecting',{title: course.title||'Course'})); 
+        let page=1, knownTotal=null, seen=0, added=0, skipped=0, exists=0; 
+        let retryCount = 0;
+
+        while(true){ 
+            const j = await getJSON(`/lectures?course_id=${course.id}&page=${page}`); 
+            
+            if (!j || j.ok === false) {
+                if (retryCount < 3) {
+                    retryCount++;
+                    setBusyTextTextual(`Error, try again -> (${retryCount}/3)...`, "API Rate");
+                    await delay(3000 * retryCount); 
+                    continue;
+                } else {
+                    toast("Udemy disconnected (Too many requests). Please wait a bit and try again.");
+                    break;
+                }
+            }
+            retryCount = 0;
+
+            if(knownTotal==null) knownTotal = (j && Number.isFinite(j.count)) ? (j.count|0) : null; 
+            const chunk = Array.isArray(j.results) ? j.results : []; 
+            if(chunk.length===0) break; 
+            
+            for(const lec of chunk){ 
+                seen++; 
+                setBusyTextTextual(`${seen}/${knownTotal ?? '…'}`, lec.title || 'Section'); 
+                
+                if(!lec || !lec.asset || lec.asset.asset_type!=='Video'){ 
+                    skipped++; 
+                    continue; 
+                } 
+                
+                const res = await enqueueLecture(course, lec, seen, preference, opts); 
+                if(res && res.skipped && res.reason==='exists') exists++; 
+                else if(res && res.ok) added++; 
+                else skipped++; 
+                
+                if(seen%5===0) qTick(true); 
+
+                await delay(150);
+            } 
+            
+            if(j.next) {
+                page++; 
+                setBusyTextTextual(`${seen}/${knownTotal ?? '…'}`, "Loading next page...");
+                await delay(1500); 
+            } else break; 
+        } 
+        qTick(true); 
+        toast(t('toast.added_summary', {added, seen, skipped, exists})); 
+        if(added===0 && exists>0 && skipped===0) toast(t('toast.course_done',{title: course.title})); 
+        ensureCourseSize(course.id, preference); 
+    } catch(err) {
+        console.error(err);
+        toast("An unexpected error occurred during the process.");
+    } finally { 
+        hideBusy(); 
+    }
 }
 
 /* ===== course total size (lazy) ===== */
@@ -568,7 +616,16 @@ if(prevBtn) prevBtn.addEventListener('click',()=>loadPage(state.page-1));
 if(nextBtn) nextBtn.addEventListener('click',()=>loadPage(state.page+1));
 if(refreshBtn) refreshBtn.addEventListener('click',()=>loadPage(state.page));
 if(downloadSelectedBtn) downloadSelectedBtn.addEventListener('click', downloadSelected);
-if(qInput) qInput.addEventListener('input',()=>{ state.filter=qInput.value||''; renderGrid(); });
+let searchTimer = null;
+if(qInput) qInput.addEventListener('input', () => { 
+    state.filter = (qInput.value || '').trim();
+    
+    clearTimeout(searchTimer);
+    
+    searchTimer = setTimeout(() => {
+        loadPage(1); 
+    }, 600);
+});
 if(signOutBtn) signOutBtn.addEventListener('click', signOut);
 if(settingsBtn && settingsPanel) settingsBtn.addEventListener('click', ()=>{ settingsPanel.style.display = (settingsPanel.style.display==='none' || settingsPanel.style.display==='') ? 'block' : 'none'; });
 if(settingsCloseBtn && settingsPanel) settingsCloseBtn.addEventListener('click', ()=>{ settingsPanel.style.display='none'; });

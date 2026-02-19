@@ -64,7 +64,7 @@ public:
 	std::pair<boost::beast::http::status, std::string>
 		handleSettingsUpdate(const std::string& body);
 
-	std::pair<boost::beast::http::status, std::string> handleCourses(int page, int page_size);
+	std::pair<boost::beast::http::status, std::string> handleCourses(int page, int page_size, const std::string& query = "");
 
 	std::pair<boost::beast::http::status, std::string> handleDownloadRaw(const std::string& body);
 

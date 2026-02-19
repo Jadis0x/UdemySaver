@@ -31,10 +31,10 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 	}
 
 	auto cleanup_tmp = [&]()
-	{
-		std::error_code ec;
-		std::filesystem::remove(tmp_path, ec);
-	};
+		{
+			std::error_code ec;
+			std::filesystem::remove(tmp_path, ec);
+		};
 
 	AVFormatContext* in_ctx = nullptr;
 	AVFormatContext* out_ctx = nullptr;
@@ -46,47 +46,47 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 	long long bytes_written = 0;
 
 	auto report_progress = [&](bool force = false)
-	{
-		if (!on_progress) return;
-		auto now = std::chrono::steady_clock::now();
-		if (!force && now - last_progress < progress_interval) return;
-		last_progress = now;
+		{
+			if (!on_progress) return;
+			auto now = std::chrono::steady_clock::now();
+			if (!force && now - last_progress < progress_interval) return;
+			last_progress = now;
 
-		double total = static_cast<double>(estimated_total_bytes);
-		double current = static_cast<double>(bytes_written);
-		if (total > 0.0)
-		{
-			if (current > total) current = total;
-			on_progress(current, total);
-		}
-		else
-		{
-			on_progress(current, 0.0);
-		}
-	};
+			double total = static_cast<double>(estimated_total_bytes);
+			double current = static_cast<double>(bytes_written);
+			if (total > 0.0)
+			{
+				if (current > total) current = total;
+				on_progress(current, total);
+			}
+			else
+			{
+				on_progress(current, 0.0);
+			}
+		};
 
 	auto cleanup_ctx = [&]()
-	{
-		if (in_ctx)
 		{
-			avformat_close_input(&in_ctx);
-			in_ctx = nullptr;
-		}
-		if (out_ctx)
-		{
-			if (!(out_ctx->oformat->flags & AVFMT_NOFILE) && out_ctx->pb)
+			if (in_ctx)
 			{
-				avio_closep(&out_ctx->pb);
+				avformat_close_input(&in_ctx);
+				in_ctx = nullptr;
 			}
-			avformat_free_context(out_ctx);
-			out_ctx = nullptr;
-		}
-		if (in_opts)
-		{
-			av_dict_free(&in_opts);
-			in_opts = nullptr;
-		}
-	};
+			if (out_ctx)
+			{
+				if (!(out_ctx->oformat->flags & AVFMT_NOFILE) && out_ctx->pb)
+				{
+					avio_closep(&out_ctx->pb);
+				}
+				avformat_free_context(out_ctx);
+				out_ctx = nullptr;
+			}
+			if (in_opts)
+			{
+				av_dict_free(&in_opts);
+				in_opts = nullptr;
+			}
+		};
 
 	std::string header_block;
 	if (!extra_headers.empty())
@@ -106,9 +106,9 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 		}
 		av_dict_set(&in_opts, "headers", header_block.c_str(), 0);
 	}
-	av_dict_set(&in_opts, "user_agent",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-		0);
+
+	av_dict_set(&in_opts, "user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0", 0);
+
 	if (!proxy.empty())
 	{
 		av_dict_set(&in_opts, "http_proxy", proxy.c_str(), 0);
@@ -132,8 +132,8 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 		return false;
 	}
 
-	double duration_seconds = (in_ctx->duration > 0) ? (double) in_ctx->duration / AV_TIME_BASE : 0.0;
-	double bitrate_total = (in_ctx->bit_rate > 0) ? (double) in_ctx->bit_rate : 0.0;
+	double duration_seconds = (in_ctx->duration > 0) ? (double)in_ctx->duration / AV_TIME_BASE : 0.0;
+	double bitrate_total = (in_ctx->bit_rate > 0) ? (double)in_ctx->bit_rate : 0.0;
 	if (bitrate_total <= 0.0)
 	{
 		for (unsigned int i = 0; i < in_ctx->nb_streams; ++i)
@@ -141,7 +141,7 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 			auto* st = in_ctx->streams[i];
 			if (st && st->codecpar && st->codecpar->bit_rate > 0)
 			{
-				bitrate_total += (double) st->codecpar->bit_rate;
+				bitrate_total += (double)st->codecpar->bit_rate;
 			}
 		}
 	}
@@ -235,12 +235,12 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 		if (pkt.pts != AV_NOPTS_VALUE)
 		{
 			pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base,
-									   (AVRounding) (AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+				(AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
 		}
 		if (pkt.dts != AV_NOPTS_VALUE)
 		{
 			pkt.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base,
-									   (AVRounding) (AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+				(AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
 		}
 		if (pkt.duration > 0)
 		{

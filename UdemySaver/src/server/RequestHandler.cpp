@@ -42,7 +42,22 @@ using boost::beast::http::status;
 using json = nlohmann::json;
 
 namespace {
-	constexpr const char* kDefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0";
+	constexpr const char* kDefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+}
+
+std::vector<std::string> get_browser_headers() {
+	return {
+		"sec-ch-ua: \"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"",
+		"sec-ch-ua-mobile: ?0",
+		"sec-ch-ua-platform: \"Windows\"",
+		"sec-fetch-dest: empty",
+		"sec-fetch-mode: cors",
+		"sec-fetch-site: same-origin",
+		"Upgrade-Insecure-Requests: 1",
+		"Pragma: no-cache",
+		"Cache-Control: no-cache",
+		"Accept-Language: en-US,en;q=0.9,tr;q=0.8"
+	};
 }
 
 struct CurlHandle { CURL* h = nullptr; CurlHandle() { h = curl_easy_init(); } ~CurlHandle() { if (h) curl_easy_cleanup(h); } };
@@ -143,159 +158,55 @@ std::string RequestHandler::pick_from_asset_for_size(const json& a, const std::s
 	std::map<int, std::string> hls_by_quality;
 	std::string fallback_mp4;
 	std::string hls_candidate;
-	std::string auto_hls_candidate;
 
-	auto register_mp4 = [&](const std::string& file, int quality)
-		{
-			if (file.empty()) return;
-			if (fallback_mp4.empty()) fallback_mp4 = file;
-			if (quality > 0) mp4_by_quality[quality] = file;
-		};
-
-	auto consider_hls = [&](const std::string& src, const std::string& label)
-		{
-			if (!src.empty() && hls_candidate.empty()) hls_candidate = src;
-			if (label == "Auto" && auto_hls_candidate.empty()) auto_hls_candidate = src;
-
-			int q = Helper::extract_quality_value(label);
-			if (q > 0)
-			{
-				hls_by_quality[q] = src;
-			}
-		};
-
-	if (a.contains("download_urls") && a["download_urls"].is_object())
-	{
+	if (a.contains("download_urls") && a["download_urls"].is_object()) {
 		auto it = a["download_urls"].find("Video");
-		if (it != a["download_urls"].end() && it->is_array() && !it->empty())
-		{
-			for (auto& v : *it)
-			{
-				if (!v.contains("file") || !v["file"].is_string()) continue;
-				std::string file = v["file"].get<std::string>();
-				int quality = Helper::extract_quality_value(v.value("label", ""));
-				register_mp4(file, quality);
-			}
-		}
-	}
-
-	if (a.contains("stream_urls") && a["stream_urls"].is_object())
-	{
-		auto it = a["stream_urls"].find("Video");
-		if (it != a["stream_urls"].end() && it->is_array())
-		{
-			for (auto& v : *it)
-			{
-				std::string type = v.value("type", "");
+		if (it != a["download_urls"].end() && it->is_array()) {
+			for (auto& v : *it) {
 				std::string file = v.value("file", "");
-				if (file.empty()) continue;
-
-				if (type == "video/mp4")
-				{
-					int quality = Helper::extract_quality_value(v.value("label", ""));
-					register_mp4(file, quality);
-				}
-				else if (type == "application/x-mpegURL")
-				{
-					consider_hls(file, v.value("label", ""));
+				int q = Helper::extract_quality_value(v.value("label", ""));
+				if (!file.empty()) {
+					if (fallback_mp4.empty()) fallback_mp4 = file;
+					if (q > 0) mp4_by_quality[q] = file;
 				}
 			}
 		}
 	}
 
-	if (a.contains("hls_url") && a["hls_url"].is_string())
-	{
-		consider_hls(a["hls_url"].get<std::string>(), "");
-	}
-
-	if (a.contains("media_sources") && a["media_sources"].is_array())
-	{
-		for (auto& m : a["media_sources"])
-		{
-			if (m.contains("src") && m["src"].is_string())
-			{
-				std::string label = m.value("label", m.value("quality", std::string{}));
-				consider_hls(m["src"].get<std::string>(), label);
+	if (a.contains("stream_urls") && a["stream_urls"].is_object()) {
+		auto it = a["stream_urls"].find("Video");
+		if (it != a["stream_urls"].end() && it->is_array()) {
+			for (auto& v : *it) {
+				if (v.value("type", "") == "video/mp4") {
+					std::string file = v.value("file", "");
+					int q = Helper::extract_quality_value(v.value("label", ""));
+					if (!file.empty() && q > 0) mp4_by_quality[q] = file;
+				}
+				else if (v.value("type", "") == "application/x-mpegURL") {
+					hls_candidate = v.value("file", "");
+				}
 			}
 		}
 	}
 
-	auto pick_preferred_mp4 = [&]() -> std::string
-		{
-			if (mp4_by_quality.empty())
-			{
-				return fallback_mp4;
-			}
+	int wanted = Helper::extract_quality_value(pref);
+	if (!mp4_by_quality.empty()) {
+		if (pref == "Highest" || wanted >= 1080) return mp4_by_quality.rbegin()->second;
+		if (pref == "Lowest") return mp4_by_quality.begin()->second;
 
-			if (pref == "Lowest") return mp4_by_quality.begin()->second;
-			if (pref == "Highest" || pref == "Auto") return mp4_by_quality.rbegin()->second;
+		auto it = mp4_by_quality.find(wanted);
+		if (it != mp4_by_quality.end()) return it->second;
 
-			int wanted = Helper::extract_quality_value(pref);
-			if (wanted > 0)
-			{
-				auto it = mp4_by_quality.find(wanted);
-				if (it != mp4_by_quality.end()) return it->second;
-				auto it_up = mp4_by_quality.lower_bound(wanted);
-				if (it_up != mp4_by_quality.end()) return it_up->second;
-				return mp4_by_quality.rbegin()->second;
-			}
+		auto it_up = mp4_by_quality.lower_bound(wanted);
+		if (it_up != mp4_by_quality.end()) return it_up->second;
 
-			return mp4_by_quality.rbegin()->second;
-		};
-
-	int highest_mp4_quality = mp4_by_quality.empty() ? 0 : mp4_by_quality.rbegin()->first;
-	bool prefer_hls = false;
-	if (!hls_candidate.empty())
-	{
-		if (pref == "Highest")
-		{
-			prefer_hls = true;
-		}
-		else
-		{
-			int wanted = Helper::extract_quality_value(pref);
-			if (wanted >= 1080)
-			{
-				prefer_hls = true;
-			}
-			else if (wanted > 0 && highest_mp4_quality > 0 && wanted > highest_mp4_quality)
-			{
-				prefer_hls = true;
-			}
-		}
+		return mp4_by_quality.rbegin()->second;
 	}
 
-	if (auto_hls_candidate.empty())
-		auto_hls_candidate = hls_candidate;
+	if (!hls_candidate.empty()) return hls_candidate;
+	if (a.contains("hls_url") && a["hls_url"].is_string()) return a["hls_url"].get<std::string>();
 
-	if (prefer_hls)
-	{
-		int wanted = Helper::extract_quality_value(pref);
-		if (wanted > 0 && !hls_by_quality.empty())
-		{
-			auto it = hls_by_quality.find(wanted);
-			if (it != hls_by_quality.end())
-				return it->second;
-
-			auto it_up = hls_by_quality.lower_bound(wanted);
-			if (it_up != hls_by_quality.end())
-				return it_up->second;
-
-			return hls_by_quality.rbegin()->second;
-		}
-	}
-
-	std::string picked_mp4 = pick_preferred_mp4();
-	if (!picked_mp4.empty())
-		return picked_mp4;
-
-	if (!auto_hls_candidate.empty())
-		return auto_hls_candidate;
-
-	if (!hls_candidate.empty())
-		return hls_candidate;
-
-	return hls_by_quality.rbegin()->second;
+	return fallback_mp4; 
 }
 
 // ---------------- ctor / dtor ----------------
@@ -431,24 +342,19 @@ std::string RequestHandler::udemy_get(const std::string& url, long timeout_ms) {
 
 	// headers
 	std::string auth = "Authorization: Bearer " + token_;
-	std::string udemy_auth = "X-Udemy-Authorization: Bearer " + token_;
 	std::string cookie_header = "Cookie: access_token=" + token_;
 	if (!client_id_.empty()) {
 		cookie_header += "; client_id=" + client_id_;
 	}
 	hdr.list = curl_slist_append(hdr.list, auth.c_str());
-	hdr.list = curl_slist_append(hdr.list, udemy_auth.c_str());
 	hdr.list = curl_slist_append(hdr.list, "Accept: application/json, text/plain, */*");
 	hdr.list = curl_slist_append(hdr.list, cookie_header.c_str());
 	hdr.list = curl_slist_append(hdr.list, "Referer: https://www.udemy.com/");
 	hdr.list = curl_slist_append(hdr.list, "Origin: https://www.udemy.com");
-	// Add browser fingerprint headers to bypass Cloudflare
-	hdr.list = curl_slist_append(hdr.list, "sec-ch-ua: \"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"");
-	hdr.list = curl_slist_append(hdr.list, "sec-ch-ua-mobile: ?0");
-	hdr.list = curl_slist_append(hdr.list, "sec-ch-ua-platform: \"macOS\"");
-	hdr.list = curl_slist_append(hdr.list, "sec-fetch-dest: empty");
-	hdr.list = curl_slist_append(hdr.list, "sec-fetch-mode: cors");
-	hdr.list = curl_slist_append(hdr.list, "sec-fetch-site: same-origin");
+	auto browser_headers = get_browser_headers();
+	for (const auto& h : browser_headers) {
+		hdr.list = curl_slist_append(hdr.list, h.c_str());
+	}
 
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdr.list);
 
@@ -572,7 +478,7 @@ std::pair<boost::beast::http::status, std::string> RequestHandler::handleSetting
 }
 
 std::pair<boost::beast::http::status, std::string>
-RequestHandler::handleCourses(int page, int page_size) {
+RequestHandler::handleCourses(int page, int page_size, const std::string& query) {
 	using boost::beast::http::status;
 	json out;
 	out["ok"] = true;
@@ -591,7 +497,6 @@ RequestHandler::handleCourses(int page, int page_size) {
 
 	auto fix_proto = [](std::string s)->std::string
 		{
-			// "//img-..." -> "https://img-..."
 			if (!s.empty() && s.rfind("//", 0) == 0) s = "https:" + s;
 			return s;
 		};
@@ -608,12 +513,14 @@ RequestHandler::handleCourses(int page, int page_size) {
 		url << api_base_
 			<< "/api-2.0/users/me/subscribed-courses/?page=" << page
 			<< "&page_size=" << page_size
-			<< "&fields[course]=@min,"
-			"title,headline,url,"
-			"image_480x270,image_480x270@2x,"
-			"image_240x135,image_240x135@2x,"
-			"image_125_H,image_200_H,"
-			"visible_instructors";
+			<< "&fields[course]=@min,title,headline,url,image_480x270,image_480x270@2x,image_240x135,image_240x135@2x,image_125_H,image_200_H,visible_instructors";
+
+		if (!query.empty()) {
+			url << "&search=" << query;
+		}
+		else {
+			url << "&ordering=-last_accessed";
+		}
 
 		auto body = udemy_get(url.str(), 15000);
 		json raw = json::parse(body);
@@ -630,14 +537,14 @@ RequestHandler::handleCourses(int page, int page_size) {
 						return {};
 					};
 
-
-				std::string img =
-					pick("image_480x270"); if (img.empty()) img = pick("image_480x270@2x");
-				if (img.empty()) img = pick("image_240x135"); if (img.empty()) img = pick("image_240x135@2x");
-				if (img.empty()) img = pick("image_200_H"); if (img.empty()) img = pick("image_125_H");
+				std::string img = pick("image_480x270");
+				if (img.empty()) img = pick("image_480x270@2x");
+				if (img.empty()) img = pick("image_240x135");
+				if (img.empty()) img = pick("image_240x135@2x");
+				if (img.empty()) img = pick("image_200_H");
+				if (img.empty()) img = pick("image_125_H");
 
 				img = fix_proto(img);
-
 				std::string rel = c.value("url", "");
 				std::string abs = make_abs(rel);
 
@@ -648,6 +555,7 @@ RequestHandler::handleCourses(int page, int page_size) {
 				j["url"] = abs;
 				j["image"] = img;
 				j["image_raw"] = c.value("image_480x270", "");
+
 				if (c.contains("visible_instructors") &&
 					c["visible_instructors"].is_array() &&
 					!c["visible_instructors"].empty())
@@ -872,12 +780,6 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 			}
 		}
 
-		if (j.course_id)
-		{
-			auto& cp = progress_[j.course_id];
-			if (cp.title.empty()) cp.title = j.course_title;
-			cp.total += 1;
-		}
 
 		j.headers.push_back(std::string("User-Agent: ") + kDefaultUserAgent);
 		j.headers.push_back("Referer: https://www.udemy.com/");
@@ -916,6 +818,12 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 			if (paused_courses_.find(j.course_id) != paused_courses_.end())
 				j.state = Job::State::Paused;
 			queue_.push_back(std::move(j));
+
+			if (j.course_id) {
+				auto& cp = progress_[j.course_id];
+				if (cp.title.empty()) cp.title = j.course_title;
+				cp.total += 1;
+			}
 		}
 
 		cv_.notify_one();
@@ -1104,6 +1012,7 @@ std::pair<boost::beast::http::status, std::string> RequestHandler::handleReconci
 
 	std::string dir = "";
 	{
+		std::lock_guard<std::mutex> lk(mtx_);
 		auto it = progress_.find(course_id);
 		if (it != progress_.end() && !it->second.title.empty())
 		{
@@ -1144,18 +1053,16 @@ std::pair<boost::beast::http::status, std::string> RequestHandler::handleReconci
 std::pair<boost::beast::http::status, std::string> RequestHandler::handleEstimate(const std::string& target) {
 	using status = boost::beast::http::status;
 
-	auto get_param = [&](const char* key)->std::string
-		{
-			auto qpos = target.find('?'); if (qpos == std::string::npos) return {};
-			std::string qs = target.substr(qpos + 1);
-			std::istringstream ss(qs); std::string kv;
-			while (std::getline(ss, kv, '&'))
-			{
-				auto eq = kv.find('='); if (eq == std::string::npos) continue;
-				auto k = kv.substr(0, eq), v = kv.substr(eq + 1);
-				if (k == key) return v;
-			}
-			return {};
+	auto get_param = [&](const char* key) -> std::string {
+		auto qpos = target.find('?'); if (qpos == std::string::npos) return {};
+		std::string qs = target.substr(qpos + 1);
+		std::istringstream ss(qs); std::string kv;
+		while (std::getline(ss, kv, '&')) {
+			auto eq = kv.find('='); if (eq == std::string::npos) continue;
+			auto k = kv.substr(0, eq), v = kv.substr(eq + 1);
+			if (k == key) return v;
+		}
+		return {};
 		};
 
 	int course_id = 0;
@@ -1163,75 +1070,79 @@ std::pair<boost::beast::http::status, std::string> RequestHandler::handleEstimat
 	catch (...) {}
 	std::string quality = get_param("quality"); if (quality.empty()) quality = "720";
 
-	json out; out["ok"] = true;
+	nlohmann::json out; out["ok"] = true;
 	if (!course_id) { out["ok"] = false; out["error"] = "missing course_id"; return { status::bad_request, out.dump() }; }
 	if (token_.empty()) { out["ok"] = false; out["error"] = "not authenticated"; return { status::unauthorized, out.dump() }; }
 
 	long long total_bytes = 0;
-	int sized = 0, unknown = 0, videos = 0;
+	int sized_mp4 = 0, unknown_mp4 = 0, hls_count = 0, total_videos = 0;
 
-	try
-	{
+	try {
 		int page = 1;
-		while (true)
-		{
+		while (true) {
 			std::ostringstream url;
-			url << api_base_
-				<< "/api-2.0/courses/" << course_id
-				<< "/subscriber-curriculum-items/?page=" << page
-				<< "&page_size=200"
-				<< "&fields[lecture]=asset,title,object_index,asset_type,description,download_url,is_free,last_watched_second"
-				<< "&fields[asset]=stream_urls,download_urls,download_url,filename,title,hls_url,media_sources,asset_type,length,media_license_token,course_is_drmed,thumbnail_sprite,slides,slide_urls,external_url"
-				<< "&fields[chapter]=title,object_index";
+			url << api_base_ << "/api-2.0/courses/" << course_id
+				<< "/subscriber-curriculum-items/?page=" << page << "&page_size=200"
+				<< "&fields[lecture]=asset,title,object_index,asset_type"
+				<< "&fields[asset]=stream_urls,download_urls,download_url,hls_url,media_sources,asset_type";
 
 			auto body = udemy_get(url.str(), 20000);
-			json raw = json::parse(body);
+			nlohmann::json raw = nlohmann::json::parse(body);
 
 			if (!(raw.contains("results") && raw["results"].is_array())) break;
 
-			for (auto& it : raw["results"])
-			{
+			for (auto& it : raw["results"]) {
 				const std::string klass = it.value("_class", it.value("type", ""));
 				if (klass != "lecture") continue;
 
-				auto asset = it.contains("asset") ? it["asset"] : json{};
+				auto asset = it.contains("asset") ? it["asset"] : nlohmann::json{};
 				std::string urlv = pick_from_asset_for_size(asset, quality);
 				if (urlv.empty()) continue;
-				++videos;
+
+				total_videos++;
+
+				if (urlv.find(".m3u8") != std::string::npos) {
+					hls_count++;
+					continue;
+				}
 
 				long long bytes = -1; std::string emsg;
 				std::vector<std::string> hdrs = {
-										std::string("User-Agent: ") + kDefaultUserAgent,
-										"Referer: https://www.udemy.com/",
-										"Origin: https://www.udemy.com"
+					std::string("User-Agent: ") + kDefaultUserAgent,
+					"Referer: https://www.udemy.com/",
+					"Origin: https://www.udemy.com"
 				};
+
 				append_auth_headers_for_url(urlv, hdrs);
 
-				if (probe_content_length(urlv, hdrs, bytes, emsg) && bytes >= 0)
-				{
-					total_bytes += bytes; ++sized;
+				if (probe_content_length(urlv, hdrs, bytes, emsg) && bytes >= 0) {
+					total_bytes += bytes;
+					sized_mp4++;
 				}
-				else
-				{
-					++unknown;
+				else {
+					unknown_mp4++;
 				}
+
+				std::this_thread::sleep_for(std::chrono::milliseconds(150));
 			}
 
-			// next?
-			if (raw.contains("next") && !raw["next"].is_null()) { ++page; }
+			if (raw.contains("next") && !raw["next"].is_null()) {
+				page++;
+				std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+			}
 			else break;
 		}
 
 		out["total_bytes"] = total_bytes;
-		out["videos"] = videos;
-		out["sized"] = sized;
-		out["unknown"] = unknown;
+		out["videos"] = total_videos;
+		out["sized"] = sized_mp4;
+		out["unknown"] = unknown_mp4 + hls_count;
+		out["details"] = { {"hls", hls_count}, {"error_mp4", unknown_mp4} };
 		out["quality"] = quality;
 
 		return { status::ok, out.dump() };
 	}
-	catch (const std::exception& e)
-	{
+	catch (const std::exception& e) {
 		out["ok"] = false; out["error"] = e.what();
 		return { status::bad_request, out.dump() };
 	}
@@ -1330,6 +1241,12 @@ void RequestHandler::append_auth_headers_for_url(const std::string& url, std::ve
 	if (token_.empty()) return;
 
 	headers.push_back(std::string("Authorization: Bearer ") + token_);
+
+	std::string cookie_header = "Cookie: access_token=" + token_;
+	if (!client_id_.empty()) {
+		cookie_header += "; client_id=" + client_id_;
+	}
+	headers.push_back(cookie_header);
 }
 
 std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id, const std::string& prefer_quality) {
@@ -1955,5 +1872,6 @@ void RequestHandler::worker_loop() {
 				}
 			}
 		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 	}
 }

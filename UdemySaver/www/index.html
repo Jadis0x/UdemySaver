@@ -42,15 +42,18 @@
     <!-- CONTENT -->
     <div class="wrap">
         <div id="authWarn" class="empty" style="display:none">
-            <b data-i18n="auth.missing_title">Looks like you're not signed in.</b>
-            <div style="margin-top:6px" data-i18n="auth.help">
-                Add <code>udemy_access_token=...</code> into settings.ini or enter token below:
+            <b class="auth-title" data-i18n="auth.missing_title">Sign In</b>
+
+            <div class="auth-sub" data-i18n="auth.help">
+                Enter your access token to access your library.
             </div>
-            <div style="display:flex; gap:8px; margin-top:10px; align-items:center; flex-wrap:wrap">
-                <input id="tokenInput" type="password" placeholder="Udemy access token" style="flex:1; min-width:260px; background:#0e1624; color:#e6eef8; border:1px solid var(--border); border-radius:8px; padding:8px 10px;" />
-                <button class="btn primary" id="saveTokenBtn" data-i18n="actions.save">Save</button>
+
+            <div class="auth-group">
+                <input id="tokenInput" type="password" placeholder="Paste access token here..." />
+                <button class="btn primary" id="saveTokenBtn" data-i18n="actions.save">Sign In</button>
             </div>
-            <div id="authMsg" class="muted" style="margin-top:8px"></div>
+
+            <div id="authMsg" class="muted" style="margin-top:15px"></div>
         </div>
 
         <div id="grid" class="grid"></div>

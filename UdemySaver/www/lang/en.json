@@ -18,7 +18,7 @@
   "auth.open": "signed in",
   "auth.closed": "signed out",
   "auth.missing_title": "Looks like you’re not signed in.",
-  "auth.help": "Add udemy_access_token=... into settings.ini or enter token below:",
+  "auth.help": "Enter your access token to access your library.",
   "auth.token_empty": "Token cannot be empty.",
   "auth.save_failed": "Could not save.",
   "auth.saved_reload": "Saved. Reloading page...",

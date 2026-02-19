@@ -93,7 +93,7 @@ private:
 				return write(std::move(res));
 			}
 
-			// GET /courses?page=&page_size=
+			// GET /courses?page=&page_size=&search=
 			if (req_.method() == http::verb::get &&
 				std::string(req_.target()).rfind("/courses", 0) == 0) {
 
@@ -101,7 +101,16 @@ private:
 				int page = get_int_param(target, "page", 1);
 				int page_size = get_int_param(target, "page_size", 12);
 
-				auto [st, body] = handler_->handleCourses(page, page_size);
+				std::string search_query = "";
+				auto qpos = target.find("search=");
+				if (qpos != std::string::npos) {
+					std::string temp = target.substr(qpos + 7);
+					auto end_pos = temp.find('&');
+					if (end_pos != std::string::npos) temp = temp.substr(0, end_pos);
+					search_query = temp;
+				}
+
+				auto [st, body] = handler_->handleCourses(page, page_size, search_query);
 				http::response<http::string_body> res{ st, req_.version() };
 				res.set(http::field::server, "beast");
 				res.set(http::field::content_type, "application/json");
@@ -110,7 +119,7 @@ private:
 				return write(std::move(res));
 			}
 
-			// GET /session  -> RequestHandler tarafı
+			// GET /session 
 			if (req_.method() == http::verb::get && req_.target() == "/session") {
 				auto [st, body] = handler_->handleSession();
 				http::response<http::string_body> res{ st, req_.version() };
