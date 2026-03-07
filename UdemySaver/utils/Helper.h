@@ -48,85 +48,37 @@ namespace Helper
 #endif
 	}
 
-	inline std::string slugify(const std::string& s) {
-        std::string out;
-        out.reserve(s.size());
+	inline std::string slugify(const std::string& str) {
+		std::string out;
+		out.reserve(str.size());
+		bool last_was_dash = false;
 
-        auto push_dash = [&]()
-        {
-            if (!out.empty() && out.back() != '-') out.push_back('-');
-        };
+		for (char c : str) {
+			if (c == '<' || c == '>' || c == ':' || c == '"' ||
+				c == '/' || c == '\\' || c == '|' || c == '?' || c == '*') {
+				if (!last_was_dash) {
+					out.push_back('-');
+					last_was_dash = true;
+				}
+			}
+			else if (static_cast<unsigned char>(c) < 32 || c == 127) {
+				continue; 
+			}
+			else {
+				out.push_back(c);
+				last_was_dash = false;
+			}
+		}
 
-        for (std::size_t i = 0; i < s.size();)
-        {
-            unsigned char c = static_cast<unsigned char>(s[i]);
-            if (c < 0x80)
-            {
-                if (std::isalnum(c))
-                {
-                    out.push_back(static_cast<char>(std::tolower(c)));
-                }
-                else
-                {
-                    push_dash();
-                }
-                ++i;
-                continue;
-            }
+		auto first = out.find_first_not_of("- ");
+		if (first != std::string::npos) out = out.substr(first);
+		else out.clear();
 
-            std::size_t len = 1;
-            if ((c & 0xE0u) == 0xC0u) len = 2;
-            else if ((c & 0xF0u) == 0xE0u) len = 3;
-            else if ((c & 0xF8u) == 0xF0u) len = 4;
+		auto last = out.find_last_not_of("- ");
+		if (last != std::string::npos) out = out.substr(0, last + 1);
 
-            if (i + len > s.size()) break;
-
-            bool valid = true;
-            for (std::size_t k = 1; k < len; ++k)
-            {
-                unsigned char cc = static_cast<unsigned char>(s[i + k]);
-                if ((cc & 0xC0u) != 0x80u)
-                {
-                    valid = false;
-                    break;
-                }
-            }
-
-            if (valid)
-            {
-                out.append(s, i, len);
-                i += len;
-            }
-            else
-            {
-                ++i;
-            }
-        }
-
-        if (!out.empty())
-        {
-            auto first = out.find_first_not_of('-');
-            if (first == std::string::npos)
-            {
-                out.clear();
-            }
-            else if (first > 0)
-            {
-                out.erase(0, first);
-            }
-        }
-
-        if (!out.empty())
-        {
-            auto last = out.find_last_not_of('-');
-            if (last != std::string::npos && last + 1 < out.size())
-            {
-                out.erase(last + 1);
-            }
-        }
-
-        if (out.empty()) out = "course";
-        return out;
+		if (out.empty()) out = "item";
+		return out;
 	}
 
 	inline std::string ff_errstr(int err) {
@@ -136,9 +88,11 @@ namespace Helper
 	}
 
 	inline std::string course_dir(int course_id, const std::string& title) {
+		std::string safe_title = slugify(title);
+		if (safe_title.size() > 50) safe_title = safe_title.substr(0, 50);
+
 		std::ostringstream ss;
-		ss << "downloads/"
-			<< slugify(title) << "-" << course_id;
+		ss << "downloads/" << safe_title << "-" << course_id;
 		return ss.str();
 	}
 
@@ -160,7 +114,9 @@ namespace Helper
 	}
 
 	inline std::string section_dir(int idx, const std::string& title) {
-		return zpad(idx, 2) + " - " + slugify(title);
+		std::string safe = slugify(title);
+		if (safe.size() > 40) safe = safe.substr(0, 40);
+		return zpad(idx, 2) + " - " + safe;
 	}
 
 	inline size_t write_to_string(void* ptr, size_t size, size_t nmemb, void* userdata) {

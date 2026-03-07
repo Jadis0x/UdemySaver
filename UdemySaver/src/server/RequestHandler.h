@@ -100,8 +100,6 @@ public:
 private:
 	// settings
 	void load_settings();
-	static std::string trim(std::string s);
-	static std::string read_file_utf8(const std::string& path);
 
 	// Udemy API GET with bearer token from settings.ini
 	std::string udemy_get(const std::string& url, long timeout_ms = 15000);

@@ -5,6 +5,12 @@
 #include <memory>
 
 int main() {
+#ifdef _WIN32
+    // Set console output to UTF-8 for Windows Terminal
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+
     try {
         boost::asio::io_context ioc;
 

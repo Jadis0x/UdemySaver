@@ -3,25 +3,28 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>UdemySaver</title>
+    <title>UdemySaver Premium</title>
     <link rel="stylesheet" href="/www/theme.css">
-	
-	<link rel="preconnect" href="https://fonts.googleapis.com">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
-    <!-- NAV -->
     <div class="nav">
         <div class="nav-in">
-			<div class="brand"><img src="www/assets/logo.png" alt="" class="logo">UdemySaver</div>
+            <div class="brand">
+                <span class="brand-text">Udemy<span class="highlight">Saver</span></span>
+            </div>
             <div class="grow"></div>
             <div class="search" id="searchBox">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M21 21l-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" stroke="#9aa6b2" stroke-width="2" stroke-linecap="round" /></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M21 21l-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
                 <input id="q" placeholder="Search title..." />
             </div>
 
-			<button class="btn ghost" id="settingsBtn" data-i18n="actions.settings">Settings</button>
+            <button class="btn ghost" id="settingsBtn" data-i18n="actions.settings">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            </button>
 
             <div class="user" id="userbox" style="display:none">
                 <img id="avatar" class="avatar" alt=""><span class="uname" id="uname"></span>
@@ -29,61 +32,57 @@
         </div>
     </div>
 
-    <!-- HERO -->
     <div class="hero">
-        <h1 data-i18n="library.title">Your Library</h1>
-        <span class="muted" id="countInfo"></span>
+        <div class="hero-content">
+            <h1 data-i18n="library.title">Your Library</h1>
+            <span class="muted badge-count" id="countInfo"></span>
+        </div>
         <div class="grow"></div>
-		
-		<button class="btn" id="downloadSelectedBtn" data-i18n="actions.download_selected" style="display:none">Download Selected</button>
-        <button class="btn primary" id="refreshBtn" data-i18n="actions.refresh">Refresh</button>
+        <button class="btn" id="downloadSelectedBtn" data-i18n="actions.download_selected" style="display:none">Download Selected</button>
+        <button class="btn primary" id="refreshBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+            <span data-i18n="actions.refresh">Refresh</span>
+        </button>
     </div>
 
-    <!-- CONTENT -->
     <div class="wrap">
-        <div id="authWarn" class="empty" style="display:none">
+        <div id="authWarn" class="auth-card empty" style="display:none">
+            <div class="auth-icon">🔒</div>
             <b class="auth-title" data-i18n="auth.missing_title">Sign In</b>
-
-            <div class="auth-sub" data-i18n="auth.help">
-                Enter your access token to access your library.
-            </div>
-
+            <div class="auth-sub" data-i18n="auth.help">Enter your access token to access your library.</div>
             <div class="auth-group">
                 <input id="tokenInput" type="password" placeholder="Paste access token here..." />
                 <button class="btn primary" id="saveTokenBtn" data-i18n="actions.save">Sign In</button>
             </div>
-
             <div id="authMsg" class="muted" style="margin-top:15px"></div>
         </div>
 
         <div id="grid" class="grid"></div>
 
         <div class="pager" id="pager" style="display:none">
-            <button class="btn" id="prevBtn" data-i18n="pager.prev">‹ Previous</button>
+            <button class="btn ghost" id="prevBtn" data-i18n="pager.prev">‹ Previous</button>
             <span class="page-num" id="pageInfo">Page 1</span>
-            <button class="btn" id="nextBtn" data-i18n="pager.next">Next ›</button>
+            <button class="btn ghost" id="nextBtn" data-i18n="pager.next">Next ›</button>
         </div>
     </div>
-	
-	
-	 <!-- SETTINGS -->
+
     <div class="settings-panel" id="settingsPanel" style="display:none">
         <div class="s-head">
             <h3 data-i18n="settings.title">Settings</h3>
             <div class="grow"></div>
-            <button class="btn ghost" id="settingsCloseBtn" data-i18n="actions.close">Close</button>
+            <button class="btn-icon" id="settingsCloseBtn">✕</button>
         </div>
         <div class="s-body">
-            <label style="display:flex;align-items:center;gap:6px;">
+            <label class="setting-row">
                 <span data-i18n="options.language">Language</span>
-                <select id="langSelect" class="lang-select">
-                    <option value="en">EN</option>
-                    <option value="tr">TR</option>
+                <select id="langSelect" class="styled-select">
+                    <option value="en">English</option>
+                    <option value="tr">Türkçe</option>
                 </select>
             </label>
-            <label style="display:flex;align-items:center;gap:6px;">
+            <label class="setting-row">
                 <span data-i18n="options.quality">Video quality</span>
-                <select id="optQuality" class="lang-select">
+                <select id="optQuality" class="styled-select">
                     <option value="Highest" data-i18n="quality.highest">Highest</option>
                     <option value="1080">1080p</option>
                     <option value="720">720p</option>
@@ -92,24 +91,22 @@
                     <option value="Lowest" data-i18n="quality.lowest">Lowest</option>
                 </select>
             </label>
-            <label style="display:flex;align-items:center;gap:6px;">
+            <label class="setting-cb">
                 <input type="checkbox" id="optSubs" />
-                <span data-i18n="options.subtitles">Download subtitles when available</span>
+                <span data-i18n="options.subtitles">Download subtitles</span>
             </label>
-            <label style="display:flex;align-items:center;gap:6px;">
+            <label class="setting-cb">
                 <input type="checkbox" id="optAssets" />
-                <span data-i18n="options.assets">Download supplementary assets</span>
+                <span data-i18n="options.assets">Download assets</span>
             </label>
-            <div class="support" style="margin-top:10px;">
-                <a style="color: #77ebff; border: none !important;" class="btn ghost" href="https://www.buymeacoffee.com/jadis0x" target="_blank">Buy Me a Coffee</a>
-                <a style="color: #d9d933; border: none !important;" class="btn ghost" href="https://www.paypal.me/jadis0x" target="_blank">PayPal</a>
+            <div class="support">
+                <a class="support-link coffee" href="https://www.buymeacoffee.com/jadis0x" target="_blank">☕ Buy Me a Coffee</a>
+                <a class="support-link paypal" href="https://www.paypal.me/jadis0x" target="_blank">💳 PayPal</a>
             </div>
-            <button class="btn danger" id="signOutBtn" data-i18n="actions.signout" style="margin-top:10px;">Sign out</button>
+            <button class="btn danger" id="signOutBtn" data-i18n="actions.signout" style="width:100%; margin-top:20px;">Sign out</button>
         </div>
     </div>
-	
 
-    <!-- QUEUE -->
     <div class="queue" id="queue">
         <div class="q-head">
             <h3 data-i18n="queue.title">Download Queue</h3>

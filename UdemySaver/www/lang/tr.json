@@ -1,10 +1,8 @@
 {
   "library.title": "Kitaplığın",
   "library.count_suffix": "kurs",
-
-  "search.title": "Kurs ara (başlıkta filtreler)",
+  "search.title": "Kurs ara",
   "search.placeholder": "Başlıkta ara...",
-
   "actions.refresh": "Yenile",
   "actions.save": "Kaydet",
   "actions.signout": "Çıkış yap",
@@ -13,24 +11,20 @@
   "actions.settings": "Ayarlar",
   "actions.close": "Kapat",
   "actions.download_selected": "Seçilenleri İndir",
-
   "auth.status_checking": "Durum: kontrol ediliyor…",
   "auth.open": "oturum açık",
   "auth.closed": "kapalı",
-  "auth.missing_title": "Giriş yapılmamış görünüyor.",
-  "auth.help": "settings.ini içine udemy_access_token=... ekleyebilir ya da aşağıdan token girebilirsin:",
+  "auth.missing_title": "Giriş Yap",
+  "auth.help": "Kitaplığına erişmek için access token girin.",
   "auth.token_empty": "Token boş olamaz.",
   "auth.save_failed": "Kaydedilemedi.",
-  "auth.saved_reload": "Kaydedildi. Sayfa yenileniyor...",
+  "auth.saved_reload": "Kaydedildi. Yenileniyor...",
   "auth.error_prefix": "Hata: ",
-
   "card.download": "İndir",
   "card.open": "Aç",
-
   "pager.prev": "‹ Önceki",
   "pager.next": "Sonraki ›",
   "pager.page_fmt": "Sayfa {page} / {total}",
-
   "queue.title": "İndirme Kuyruğu",
   "queue.empty": "Kuyruk boş.",
   "queue.waiting": "beklemede",
@@ -38,22 +32,25 @@
   "queue.paused": "duraklatıldı",
   "queue.failed": "hata",
   "queue.collecting": "toplanıyor…",
-
+  "queue.done_all": "TÜMÜ İNDİ",
+  "queue.done_file": "İndirme Tamamlandı",
   "toast.exists": "Zaten var: {title}",
   "toast.queued": "Zaten kuyrukta: {title}",
   "toast.collecting": "Toplanıyor: {title}",
-  "toast.added_summary": "Kuyruğa eklendi: {added}/{seen} • atlanan:{skipped} • zaten var:{exists}",
+  "toast.added_summary": "Eklenen: {added}/{seen}",
   "toast.course_done": "Kurs zaten inmiş: {title}",
-
-  "grid.empty": "Bu sayfada kurs bulunamadı.",
+  "grid.empty": "Kurs bulunamadı.",
   "quality.label": "Kalite: {q}",
   "img.placeholder": "Görsel yok",
   "quality.highest": "En yüksek",
   "quality.lowest": "En düşük",
-  "img.placeholder": "Görsel yok",
-  "options.subtitles": "Varsa altyazıları indir",
+  "options.subtitles": "Altyazıları indir",
   "options.assets": "Ek materyalleri indir",
   "options.language": "Dil",
   "options.quality": "Video kalitesi",
-  "settings.title": "Ayarlar"
+  "settings.title": "Ayarlar",
+  "queue.speed": "Hız: {speed}/s",
+  "queue.sections": "Dosya",
+  "queue.active_file": "İniyor: {file}",
+  "misc.course": "Bilinmeyen Kurs"
 }

@@ -13,6 +13,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <cstring>
 #include <unordered_map>
 #include <algorithm>
 #include <stdexcept>
@@ -119,7 +120,8 @@ bool RequestHandler::probe_content_length(const std::string& url,
 		curl_easy_setopt(ch.h, CURLOPT_PROXY, proxy_.c_str());
 		curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYPEER, 0L);
 		curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYHOST, 0L);
-	} else {
+	}
+	else {
 		curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYPEER, 1L);
 		curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYHOST, 2L);
 	}
@@ -206,7 +208,7 @@ std::string RequestHandler::pick_from_asset_for_size(const json& a, const std::s
 	if (!hls_candidate.empty()) return hls_candidate;
 	if (a.contains("hls_url") && a["hls_url"].is_string()) return a["hls_url"].get<std::string>();
 
-	return fallback_mp4; 
+	return fallback_mp4;
 }
 
 // ---------------- ctor / dtor ----------------
@@ -650,10 +652,10 @@ RequestHandler::handleLectures(int course_id, int page, int page_size) {
 			<< "/api-2.0/courses/" << course_id
 			<< "/subscriber-curriculum-items/?page=" << page
 			<< "&page_size=" << page_size
-			<< "&fields[lecture]=asset,title,object_index,asset_type,supplementary_assets,description,download_url,is_free,last_watched_second"
-			<< "&fields[asset]=stream_urls,download_urls,download_url,captions,title,filename,data,body,hls_url,media_sources,asset_type,length,media_license_token,course_is_drmed,thumbnail_sprite,slides,slide_urls,external_url"
+			<< "&fields[lecture]=asset,title,object_index,asset_type,supplementary_assets,download_url"
+			<< "&fields[asset]=stream_urls,download_urls,download_url,filename,asset_type,hls_url"
 			<< "&fields[chapter]=title,object_index"
-			<< "&fields[supplementary_asset]=id,title,asset_type,download_urls,external_url,filename";
+			<< "&fields[supplementary_asset]=id,title,asset_type,download_urls,download_url,external_url,filename";
 
 		auto body = udemy_get(url.str(), 20000);
 		nlohmann::json raw = nlohmann::json::parse(body);
@@ -713,31 +715,36 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 
 		int lecture_id = in.value("lecture_id", 0);
 		int asset_id = in.value("asset_id", 0);
+		int course_id_val = in.value("course_id", 0);
 
+		std::string course_title_val = in.value("course_title", std::string{});
+		std::string section_title_val = in.value("section_title", std::string{});
+
+		bool is_video = in.value("is_video", false);
+		std::string pref = in.value("quality", "1080");
 		std::string in_url = in.value("url", std::string{});
+
 		if (in_url.empty())
 		{
-			if (asset_id && in.value("course_id", 0) && lecture_id)
-			{
-				in_url = resolve_supplementary_asset(in["course_id"].get<int>(), lecture_id, asset_id);
+			if (is_video && course_id_val > 0 && lecture_id > 0) {
+				in_url = resolve_lecture_stream(course_id_val, lecture_id, pref);
 			}
-			else
-			{
-				throw std::runtime_error("missing url");
+			else if (asset_id > 0 && course_id_val > 0 && lecture_id > 0) {
+				try { in_url = resolve_supplementary_asset(course_id_val, lecture_id, asset_id); }
+				catch (...) { if (in_url.empty()) throw; }
 			}
 		}
 
-		// ---- job ----
 		Job j;
 		j.id = next_id_++;
 		j.url = in_url;
 		j.filename = in.value("filename", "");
 
-		j.course_id = in.value("course_id", 0);
-		j.course_title = in.value("course_title", std::string{});
+		j.course_id = course_id_val;
+		j.course_title = course_title_val;
 
 		j.section_index = in.value("section_index", 0);
-		j.section_title = in.value("section_title", std::string{});
+		j.section_title = section_title_val;
 		j.lecture_index = in.value("lecture_index", 0);
 		j.lecture_title = in.value("lecture_title", std::string{});
 
@@ -754,11 +761,32 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 			j.out_path_dir = "downloads/misc";
 		}
 
-		if (j.filename.empty())
-		{
-			std::string base = j.lecture_title.empty() ? "video" : Helper::slugify(j.lecture_title);
-			if (j.lecture_index > 0) base = Helper::zpad(j.lecture_index, 3) + " - " + base;
-			j.filename = base + ".mp4";
+		if (!j.filename.empty()) {
+			for (char& c : j.filename) {
+				if (c == '<' || c == '>' || c == ':' || c == '"' ||
+					c == '/' || c == '\\' || c == '|' || c == '?' || c == '*') {
+					c = '-';
+				}
+			}
+
+			auto abs_dir = std::filesystem::absolute(std::filesystem::u8path(j.out_path_dir));
+			std::string abs_dir_str = Helper::path_to_utf8(abs_dir);
+
+			int max_filename_len = 250 - static_cast<int>(abs_dir_str.length()) - 6;
+
+			if (max_filename_len < 10) max_filename_len = 10;
+
+			if (j.filename.size() > max_filename_len) {
+				auto ext = std::filesystem::path(j.filename).extension().string();
+				int base_len = max_filename_len - static_cast<int>(ext.length());
+
+				if (base_len > 0) {
+					j.filename = j.filename.substr(0, base_len) + ext;
+				}
+				else {
+					j.filename = j.filename.substr(0, max_filename_len);
+				}
+			}
 		}
 
 		{
@@ -780,7 +808,6 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 			}
 		}
 
-
 		j.headers.push_back(std::string("User-Agent: ") + kDefaultUserAgent);
 		j.headers.push_back("Referer: https://www.udemy.com/");
 		j.headers.push_back("Origin: https://www.udemy.com");
@@ -789,6 +816,8 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 
 		if (in.contains("headers") && in["headers"].is_array())
 			for (auto& h : in["headers"]) if (h.is_string()) j.headers.push_back(h.get<std::string>());
+
+		uint64_t job_id = j.id;
 
 		{
 			std::lock_guard<std::mutex> lk(mtx_);
@@ -815,13 +844,19 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 				return { status::ok, out2.dump() };
 			}
 
-			if (paused_courses_.find(j.course_id) != paused_courses_.end())
-				j.state = Job::State::Paused;
-			queue_.push_back(std::move(j));
+			int c_id = j.course_id;
+			std::string c_title = j.course_title;
 
-			if (j.course_id) {
-				auto& cp = progress_[j.course_id];
-				if (cp.title.empty()) cp.title = j.course_title;
+			std::cout << "[QUEUE] Added Job ID " << job_id << " -> " << j.out_path_dir << "/" << j.filename << std::endl;
+
+			if (paused_courses_.find(c_id) != paused_courses_.end())
+				j.state = Job::State::Paused;
+
+			queue_.push_back(j);
+
+			if (c_id) {
+				auto& cp = progress_[c_id];
+				if (cp.title.empty()) cp.title = c_title;
 				cp.total += 1;
 			}
 		}
@@ -830,7 +865,7 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 
 		out["ok"] = true;
 		out["queued"] = true;
-		out["id"] = j.id;
+		out["id"] = job_id;
 		return { status::ok, out.dump() };
 	}
 	catch (const std::exception& e)
@@ -841,7 +876,6 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 	}
 }
 
-
 std::pair<boost::beast::http::status, std::string> RequestHandler::handleQueueList() {
 	json out;
 	out["ok"] = true;
@@ -851,14 +885,11 @@ std::pair<boost::beast::http::status, std::string> RequestHandler::handleQueueLi
 	auto jstate = [](RequestHandler::Job::State s) -> const char*
 		{
 			using S = RequestHandler::Job::State;
-			switch (s)
-			{
-			case S::Queued:       return "queued";
-			case S::Downloading:  return "downloading";
-			case S::Done:         return "done";
-			case S::Failed:       return "failed";
-			case S::Paused:       return "paused";
-			}
+			if (s == S::Queued) return "queued";
+			if (s == S::Downloading) return "downloading";
+			if (s == S::Done) return "done";
+			if (s == S::Failed) return "failed";
+			if (s == S::Paused) return "paused";
 			return "unknown";
 		};
 
@@ -964,13 +995,30 @@ std::pair<boost::beast::http::status, std::string> RequestHandler::handleQueueRe
 		{
 			std::lock_guard<std::mutex> lk(mtx_);
 			paused_courses_.erase(course_id);
+
+			int newly_queued = 0;
 			for (auto& q : queue_)
 			{
 				if (q.course_id == course_id &&
-					q.state == Job::State::Paused)
+					(q.state == Job::State::Paused || q.state == Job::State::Failed))
 				{
 					q.state = Job::State::Queued;
+					q.message = "";
 				}
+				else if (q.state == Job::State::Done)
+				{
+					std::error_code ec;
+					if (!std::filesystem::exists(std::filesystem::u8path(q.out_path), ec))
+					{
+						q.state = Job::State::Queued;
+						q.bytes_now = 0;
+						q.progress = 0.0;
+						newly_queued++;
+					}
+				}
+			}
+			if (newly_queued > 0 && progress_.count(course_id)) {
+				progress_[course_id].done = std::max(0, progress_[course_id].done - newly_queued);
 			}
 		}
 		cv_.notify_one();
@@ -1163,7 +1211,6 @@ static int curl_xferinfo_trampoline(void* clientp,
 	return 0; // continue
 }
 
-
 bool RequestHandler::curl_download_file(const std::string& url, const std::string& out_path, const std::vector<std::string>& extra_headers, std::function<void(double, double)> on_progress, std::string& msg) {
 	msg.clear();
 	auto out_fs = std::filesystem::u8path(out_path);
@@ -1173,20 +1220,31 @@ bool RequestHandler::curl_download_file(const std::string& url, const std::strin
 	auto tmp_utf8_u8 = tmp_path.u8string();
 	std::string tmp_utf8(tmp_utf8_u8.begin(), tmp_utf8_u8.end());
 
-	long long already = 0;
-	{
-		std::error_code ec;
-		auto sz = std::filesystem::file_size(tmp_path, ec);
-		if (!ec) already = static_cast<long long>(sz);
+	std::cout << "\n--------------------------------------------------" << std::endl;
+	std::cout << "[DOWNLOAD] Target: " << tmp_utf8 << std::endl;
+	std::cout << "[INFO] Path Length: " << tmp_utf8.length() << " characters." << std::endl;
+
+	if (tmp_utf8.length() >= 250) {
+		std::cout << "[WARNING] Path length is close to Windows 260 limit!" << std::endl;
 	}
 
-	FILE* fp = Helper::xfopen(tmp_utf8.c_str(), already ? "ab" : "wb");
-	if (!fp) { msg = "cannot open file"; return false; }
+	std::error_code ec;
+	std::filesystem::remove(tmp_path, ec);
+
+	FILE* fp = Helper::xfopen(tmp_utf8.c_str(), "wb");
+	if (!fp) {
+		msg = std::string("Cannot open file. OS Error: ") + std::strerror(errno);
+		std::cout << "[DOWNLOAD ERROR] File IO Failed: " << msg << std::endl;
+		return false;
+	}
 
 	CurlHandle ch;
-	if (!ch.h) { fclose(fp); msg = "curl init failed"; return false; }
+	if (!ch.h) {
+		fclose(fp);
+		msg = "curl init failed";
+		return false;
+	}
 
-	// header list
 	struct curl_slist* hdr = nullptr;
 	for (auto& h : extra_headers) hdr = curl_slist_append(hdr, h.c_str());
 
@@ -1194,7 +1252,7 @@ bool RequestHandler::curl_download_file(const std::string& url, const std::strin
 	curl_easy_setopt(ch.h, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(ch.h, CURLOPT_MAXREDIRS, 8L);
 	curl_easy_setopt(ch.h, CURLOPT_USERAGENT, kDefaultUserAgent);
-	curl_easy_setopt(ch.h, CURLOPT_ACCEPT_ENCODING, ""); // gzip
+	curl_easy_setopt(ch.h, CURLOPT_ACCEPT_ENCODING, "");
 	curl_easy_setopt(ch.h, CURLOPT_HTTPHEADER, hdr);
 	curl_easy_setopt(ch.h, CURLOPT_WRITEDATA, fp);
 	curl_easy_setopt(ch.h, CURLOPT_WRITEFUNCTION, file_write);
@@ -1203,42 +1261,60 @@ bool RequestHandler::curl_download_file(const std::string& url, const std::strin
 	curl_easy_setopt(ch.h, CURLOPT_XFERINFOFUNCTION, curl_xferinfo_trampoline);
 	curl_easy_setopt(ch.h, CURLOPT_XFERINFODATA, &on_progress);
 
-	curl_easy_setopt(ch.h, CURLOPT_CONNECTTIMEOUT_MS, 8000L);
-	curl_easy_setopt(ch.h, CURLOPT_TIMEOUT, 0L); // sınırsız
+	curl_easy_setopt(ch.h, CURLOPT_CONNECTTIMEOUT_MS, 10000L);
+	curl_easy_setopt(ch.h, CURLOPT_TIMEOUT, 0L);
 
 	if (!proxy_.empty()) {
 		curl_easy_setopt(ch.h, CURLOPT_PROXY, proxy_.c_str());
 		curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYPEER, 0L);
 		curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYHOST, 0L);
-	} else {
+	}
+	else {
 		curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYPEER, 1L);
 		curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYHOST, 2L);
 	}
 
-	// resume
-	if (already > 0)
-		curl_easy_setopt(ch.h, CURLOPT_RESUME_FROM_LARGE, static_cast<curl_off_t>(already));
-
 	CURLcode rc = curl_easy_perform(ch.h);
+
+	long http_code = 0;
+	curl_easy_getinfo(ch.h, CURLINFO_RESPONSE_CODE, &http_code);
+
 	if (hdr) curl_slist_free_all(hdr);
 	fclose(fp);
 
-	if (rc != CURLE_OK)
-	{
+	if (rc != CURLE_OK) {
 		msg = curl_easy_strerror(rc);
+		std::cout << "[DOWNLOAD ERROR] cURL Error: " << msg << std::endl;
 		return false;
 	}
 
-	std::error_code ec;
-	std::filesystem::rename(tmp_path, out_fs, ec);
-	if (ec) { msg = "rename failed"; return false; }
+	if (http_code >= 400) {
+		msg = "HTTP " + std::to_string(http_code);
+		std::cout << "[DOWNLOAD ERROR] Server rejected request. Status: " << msg << std::endl;
+		return false;
+	}
 
+	ec.clear();
+	std::filesystem::rename(tmp_path, out_fs, ec);
+	if (ec) {
+		msg = "Rename failed: " + ec.message();
+		std::cout << "[DOWNLOAD ERROR] " << msg << std::endl;
+		return false;
+	}
+
+	std::cout << "[DOWNLOAD] Completed successfully." << std::endl;
 	return true;
 }
 
 void RequestHandler::append_auth_headers_for_url(const std::string& url, std::vector<std::string>& headers) const
 {
 	if (token_.empty()) return;
+
+	if (url.find("Signature=") != std::string::npos ||
+		url.find("token=") != std::string::npos)
+	{
+		return;
+	}
 
 	headers.push_back(std::string("Authorization: Bearer ") + token_);
 
@@ -1348,7 +1424,8 @@ std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id
 					curl_easy_setopt(ch.h, CURLOPT_PROXY, proxy_.c_str());
 					curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYPEER, 0L);
 					curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYHOST, 0L);
-				} else {
+				}
+				else {
 					curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYPEER, 1L);
 					curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYHOST, 2L);
 				}
@@ -1444,27 +1521,40 @@ std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id
 
 				if (variants.empty()) return {};
 
-				const Variant* exact = nullptr;
-				const Variant* best_height = nullptr;
-				const Variant* best_bandwidth = nullptr;
-				for (auto& v : variants)
-				{
-					if (v.height == 1080 && v.width == 1920)
-					{
-						exact = &v;
-						break;
-					}
-					if (!best_height || v.height > best_height->height)
-						best_height = &v;
-					if (!best_bandwidth || v.bandwidth > best_bandwidth->bandwidth)
-						best_bandwidth = &v;
-				}
+				int target_h = Helper::extract_quality_value(prefer_quality);
+				bool want_highest = (prefer_quality == "Highest" || target_h == 0);
+				bool want_lowest = (prefer_quality == "Lowest");
 
-				const Variant* chosen = exact;
-				if (!chosen)
-				{
-					if (best_height && best_height->height > 0) chosen = best_height;
-					else chosen = best_bandwidth;
+				const Variant* chosen = nullptr;
+
+				if (want_highest) {
+					for (auto& v : variants) {
+						if (!chosen || v.height > chosen->height || (v.height == chosen->height && v.bandwidth > chosen->bandwidth)) chosen = &v;
+					}
+				}
+				else if (want_lowest) {
+					for (auto& v : variants) {
+						if (!chosen || v.height < chosen->height || (v.height == chosen->height && v.bandwidth < chosen->bandwidth)) chosen = &v;
+					}
+				}
+				else {
+					for (auto& v : variants) {
+						if (v.height == target_h) {
+							if (!chosen || v.bandwidth > chosen->bandwidth) chosen = &v;
+						}
+					}
+					if (!chosen) {
+						for (auto& v : variants) {
+							if (v.height <= target_h) {
+								if (!chosen || v.height > chosen->height) chosen = &v;
+							}
+						}
+					}
+					if (!chosen && !variants.empty()) {
+						for (auto& v : variants) {
+							if (!chosen || v.height > chosen->height) chosen = &v;
+						}
+					}
 				}
 
 				if (!chosen) return {};
@@ -1709,50 +1799,31 @@ std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id
 	throw std::runtime_error("no stream url found in lecture");
 }
 
-
 std::string RequestHandler::resolve_supplementary_asset(int course_id, int lecture_id, int asset_id) {
 	std::ostringstream url;
-	url << api_base_
-		<< "/api-2.0/users/me/subscribed-courses/" << course_id
-		<< "/lectures/" << lecture_id
-		<< "/supplementary-assets/" << asset_id
-		<< "?fields[supplementary_asset]=download_urls,external_url,asset_type,filename";
+	url << api_base_ << "/api-2.0/assets/" << asset_id
+		<< "/?fields[asset]=download_urls,download_url,external_url,filename,asset_type";
 
 	auto body = udemy_get(url.str(), 15000);
 	json j = json::parse(body);
 
-	json* a = nullptr;
-	if (j.contains("asset") && j["asset"].is_object())
-	{
-		a = &j["asset"];
-	}
-	else if (j.is_object())
-	{
-		a = &j;
-	}
+	const json& target = j.contains("asset") ? j["asset"] : j;
 
-	if (!a) throw std::runtime_error("no asset in supplementary");
-
-	if (a->contains("download_urls") && (*a)["download_urls"].is_object())
-	{
-		for (auto& [k, arr] : (*a)["download_urls"].items())
-		{
-			if (arr.is_array() && !arr.empty())
-			{
-				auto& first = arr[0];
-				if (first.contains("file") && first["file"].is_string())
-					return first["file"].get<std::string>();
-				if (first.contains("url") && first["url"].is_string())
-					return first["url"].get<std::string>();
+	if (target.contains("download_urls") && target["download_urls"].is_object()) {
+		auto& d_urls = target["download_urls"];
+		for (auto it = d_urls.begin(); it != d_urls.end(); ++it) {
+			if (it.value().is_array() && !it.value().empty()) {
+				auto& entry = it.value()[0];
+				if (entry.contains("file")) return entry["file"].get<std::string>();
 			}
 		}
 	}
-	if (a->contains("external_url") && (*a)["external_url"].is_string())
-		return (*a)["external_url"].get<std::string>();
 
-	throw std::runtime_error("no downloadable url in supplementary");
+	if (target.value("download_url", "") != "") return target["download_url"];
+	if (target.value("external_url", "") != "") return target["external_url"];
+
+	throw std::runtime_error("no downloadable url found");
 }
-
 
 static inline double now_sec() {
 	using namespace std::chrono;
@@ -1763,38 +1834,64 @@ void RequestHandler::worker_loop() {
 	while (true)
 	{
 		Job j;
+		bool should_stop = false;
+		bool has_job = false;
 
 		{
 			std::unique_lock<std::mutex> lk(mtx_);
-			cv_.wait(lk, [&] { return !queue_.empty() || stop_; });
-			if (stop_) break;
+			cv_.wait(lk, [&] {
+				if (stop_) return true;
+				return std::any_of(queue_.begin(), queue_.end(), [](const Job& x) { return x.state == Job::State::Queued; });
+				});
 
-			auto it = std::find_if(queue_.begin(), queue_.end(),
-				[](const Job& x) { return x.state == Job::State::Queued; });
-			if (it == queue_.end())
-			{
-				lk.unlock();
-				std::this_thread::sleep_for(std::chrono::milliseconds(200));
-				continue;
+			if (stop_) {
+				should_stop = true;
 			}
-			j = *it;
-			it->state = Job::State::Downloading;
+			else {
+				auto it = std::find_if(queue_.begin(), queue_.end(), [](const Job& x) { return x.state == Job::State::Queued; });
+				if (it != queue_.end())
+				{
+					j = *it;
+					it->state = Job::State::Downloading;
+					has_job = true;
+				}
+			}
 		}
+
+		if (should_stop) break;
+		if (!has_job) continue;
 
 		std::string lower_url = j.url;
 		std::transform(lower_url.begin(), lower_url.end(), lower_url.begin(), [](unsigned char c) { return (char)std::tolower(c); });
 		bool is_hls = lower_url.find(".m3u8") != std::string::npos;
 
+		std::cout << "\n==================================================" << std::endl;
+		std::cout << "[WORKER] PROCESSING STARTED" << std::endl;
+		std::cout << "[WORKER] Job ID : " << j.id << std::endl;
+		std::cout << "[WORKER] Course : " << j.course_title << std::endl;
+		std::cout << "[WORKER] File   : " << j.filename << std::endl;
+		std::cout << "[WORKER] HLS?   : " << (is_hls ? "YES" : "NO") << std::endl;
+		std::cout << "==================================================" << std::endl;
+
 		auto out_dir = std::filesystem::u8path(j.out_path_dir);
 		std::filesystem::path target_path = out_dir / std::filesystem::u8path(j.filename);
 		if (is_hls)
 		{
-			target_path.replace_extension(".ts");
+			target_path.replace_extension(".mp4");
 			j.filename = Helper::path_to_utf8(target_path.filename());
-			std::cout << "[HLS] Downloading HLS stream to TS: " << Helper::path_to_utf8(target_path) << std::endl;
+			std::cout << "[HLS] Downloading HLS stream to MP4: " << Helper::path_to_utf8(target_path) << std::endl;
 		}
 
 		j.out_path = Helper::path_to_utf8(target_path);
+
+		{
+			std::lock_guard<std::mutex> lk(mtx_);
+			auto it = std::find_if(queue_.begin(), queue_.end(), [&](const Job& q) { return q.id == j.id; });
+			if (it != queue_.end()) {
+				it->bytes_now = 0;
+				it->progress = 0.0;
+			}
+		}
 
 		std::atomic<double>     last_ts{ now_sec() };
 		std::atomic<long long>  last_bytes{ 0 };
@@ -1802,14 +1899,12 @@ void RequestHandler::worker_loop() {
 		auto on_progress = [this, &j, &last_ts, &last_bytes](double dlnow, double dltotal)
 			{
 				std::lock_guard<std::mutex> lk(mtx_);
-
 				j.bytes_now = static_cast<long long>(dlnow);
 				j.bytes_total = static_cast<long long>(dltotal);
-
 				double ts = now_sec();
 				const double dt = std::max(0.25, ts - last_ts.load());
 				long long db = j.bytes_now - last_bytes.load();
-				double inst = (double)db / dt; // B/s
+				double inst = (double)db / dt;
 				if (j.speed_bps <= 0) j.speed_bps = inst;
 				else                  j.speed_bps = 0.25 * inst + 0.75 * j.speed_bps;
 
@@ -1819,15 +1914,14 @@ void RequestHandler::worker_loop() {
 				if (j.bytes_total > 0)
 					j.progress = (j.bytes_now * 100.0) / (double)j.bytes_total;
 
-				for (auto& q : queue_) if (q.id == j.id)
-				{
-					q.bytes_now = j.bytes_now;
-					q.bytes_total = j.bytes_total;
-					q.speed_bps = j.speed_bps;
-					q.progress = j.progress;
-					q.filename = j.filename;
-					q.out_path = j.out_path;
-					break;
+				auto it = std::find_if(queue_.begin(), queue_.end(), [&](const Job& q) { return q.id == j.id; });
+				if (it != queue_.end()) {
+					it->bytes_now = j.bytes_now;
+					it->bytes_total = j.bytes_total;
+					it->speed_bps = j.speed_bps;
+					it->progress = j.progress;
+					it->filename = j.filename;
+					it->out_path = j.out_path;
 				}
 			};
 
@@ -1837,38 +1931,245 @@ void RequestHandler::worker_loop() {
 
 			std::string msg = "";
 			bool ok = false;
+
 			if (is_hls)
 			{
-				ok = FFmpegHelper::convert_m3u8_to_ts(j.url, j.out_path, j.headers, proxy_, on_progress, msg);
-			}
-			else
-			{
-				ok = curl_download_file(j.url, j.out_path, j.headers, on_progress, msg);
+				std::cout << "[HLS] Intercepting Playlist to bypass CDN Auth checks..." << std::endl;
+				std::string variant_m3u8_body;
+				std::string effective_url = j.url;
+				std::string current_url = j.url;
+
+				auto fetch_playlist = [&](const std::string& target_url, std::string& body, std::string& eff_url) -> bool {
+					CurlHandle ch;
+					if (!ch.h) return false;
+					curl_easy_setopt(ch.h, CURLOPT_URL, target_url.c_str());
+					curl_easy_setopt(ch.h, CURLOPT_FOLLOWLOCATION, 1L);
+					curl_easy_setopt(ch.h, CURLOPT_MAXREDIRS, 8L);
+					curl_easy_setopt(ch.h, CURLOPT_USERAGENT, kDefaultUserAgent);
+					curl_easy_setopt(ch.h, CURLOPT_ACCEPT_ENCODING, "");
+
+					struct curl_slist* hdr = nullptr;
+					std::vector<std::string> headers = {
+						std::string("User-Agent: ") + kDefaultUserAgent,
+						"Referer: https://www.udemy.com/",
+						"Origin: https://www.udemy.com"
+					};
+					append_auth_headers_for_url(target_url, headers);
+					for (const auto& h : headers) hdr = curl_slist_append(hdr, h.c_str());
+
+					curl_easy_setopt(ch.h, CURLOPT_HTTPHEADER, hdr);
+					curl_easy_setopt(ch.h, CURLOPT_WRITEFUNCTION, Helper::write_to_string);
+					curl_easy_setopt(ch.h, CURLOPT_WRITEDATA, &body);
+
+					if (!proxy_.empty()) {
+						curl_easy_setopt(ch.h, CURLOPT_PROXY, proxy_.c_str());
+						curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYPEER, 0L);
+						curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYHOST, 0L);
+					}
+					else {
+						curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYPEER, 1L);
+						curl_easy_setopt(ch.h, CURLOPT_SSL_VERIFYHOST, 2L);
+					}
+
+					CURLcode rc = curl_easy_perform(ch.h);
+					long code = 0;
+					curl_easy_getinfo(ch.h, CURLINFO_RESPONSE_CODE, &code);
+
+					if (rc == CURLE_OK) {
+						char* eff_url_ptr = nullptr;
+						curl_easy_getinfo(ch.h, CURLINFO_EFFECTIVE_URL, &eff_url_ptr);
+						if (eff_url_ptr) eff_url = eff_url_ptr;
+					}
+					if (hdr) curl_slist_free_all(hdr);
+					return (rc == CURLE_OK && code < 400);
+					};
+
+				if (!fetch_playlist(current_url, variant_m3u8_body, effective_url)) {
+					ok = false;
+					msg = "Initial m3u8 playlist fetch failed";
+				}
+				else {
+					ok = true;
+
+					if (variant_m3u8_body.find("#EXT-X-STREAM-INF") != std::string::npos) {
+						std::cout << "[HLS] Master Playlist detected. Extracting best variant..." << std::endl;
+						std::istringstream ss(variant_m3u8_body);
+						std::string line, variant_uri;
+
+						int max_res = -1;
+						int max_bw = -1;
+
+						while (std::getline(ss, line)) {
+							if (!line.empty() && line.back() == '\r') line.pop_back();
+
+							std::string_view sv(line);
+
+							if (sv.starts_with("#EXT-X-STREAM-INF")) {
+								int current_bw = 0;
+								int current_h = 0;
+
+								auto bw_pos = sv.find("BANDWIDTH=");
+								if (bw_pos != std::string_view::npos) {
+									current_bw = std::atoi(line.c_str() + bw_pos + 10);
+								}
+
+								auto res_pos = sv.find("RESOLUTION=");
+								if (res_pos != std::string_view::npos) {
+									auto x_pos = sv.find('x', res_pos);
+									if (x_pos != std::string_view::npos) {
+										current_h = std::atoi(line.c_str() + x_pos + 1);
+									}
+								}
+
+								std::string uri_line;
+								while (std::getline(ss, uri_line)) {
+									if (!uri_line.empty() && uri_line.back() == '\r') uri_line.pop_back();
+									if (uri_line.empty() || uri_line.front() == '#') continue;
+
+									if (current_h > max_res || (current_h == max_res && current_bw > max_bw)) {
+										max_res = current_h;
+										max_bw = current_bw;
+										variant_uri = std::move(uri_line);
+									}
+									break;
+								}
+							}
+						}
+
+						if (!variant_uri.empty()) {
+							std::cout << "[HLS] Selected highest variant: " << max_res << "p (BW: " << max_bw << ")" << std::endl;
+
+							if (variant_uri.find("://") == std::string::npos) {
+								std::string base_no_query = effective_url;
+								auto qpos = base_no_query.find('?');
+								std::string query_params;
+								if (qpos != std::string::npos) {
+									query_params = base_no_query.substr(qpos);
+									base_no_query = base_no_query.substr(0, qpos);
+								}
+								auto slash = base_no_query.rfind('/');
+								if (slash != std::string::npos) base_no_query = base_no_query.substr(0, slash + 1);
+
+								if (!variant_uri.empty() && variant_uri[0] == '/') {
+									auto scheme_pos = effective_url.find("://");
+									auto host_end = effective_url.find('/', scheme_pos + 3);
+									std::string host = (host_end != std::string::npos) ? effective_url.substr(0, host_end) : effective_url;
+									current_url = host + variant_uri;
+								}
+								else {
+									current_url = base_no_query + variant_uri;
+								}
+								if (current_url.find('?') == std::string::npos) current_url += query_params;
+							}
+							else {
+								current_url = variant_uri;
+							}
+
+							variant_m3u8_body.clear();
+							effective_url.clear();
+							if (!fetch_playlist(current_url, variant_m3u8_body, effective_url)) {
+								ok = false;
+								msg = "Variant playlist fetch failed";
+							}
+						}
+					}
+				}
+
+				if (ok) {
+					std::string base_url = effective_url;
+					std::string query_params;
+					auto qpos = base_url.find('?');
+					if (qpos != std::string::npos) {
+						query_params = base_url.substr(qpos);
+						base_url = base_url.substr(0, qpos);
+					}
+					auto slash = base_url.rfind('/');
+					if (slash != std::string::npos) base_url = base_url.substr(0, slash + 1);
+
+					std::string local_m3u8_content;
+					std::istringstream iss(variant_m3u8_body);
+					std::string line;
+					while (std::getline(iss, line)) {
+						if (!line.empty() && line.back() == '\r') line.pop_back();
+						if (line.empty()) continue;
+
+						if (line[0] == '#') {
+							local_m3u8_content += line + "\n";
+						}
+						else {
+							if (line.find("://") == std::string::npos) {
+								std::string abs_url;
+								if (!line.empty() && line[0] == '/') {
+									auto scheme_pos = effective_url.find("://");
+									auto host_end = effective_url.find('/', scheme_pos + 3);
+									std::string host = (host_end != std::string::npos) ? effective_url.substr(0, host_end) : effective_url;
+									abs_url = host + line;
+								}
+								else {
+									abs_url = base_url + line;
+								}
+								if (abs_url.find('?') == std::string::npos) abs_url += query_params;
+								local_m3u8_content += abs_url + "\n";
+							}
+							else {
+								local_m3u8_content += line + "\n";
+							}
+						}
+					}
+
+					std::string local_m3u8_path = Helper::path_to_utf8(target_path) + ".local.m3u8";
+					FILE* fp = Helper::xfopen(local_m3u8_path.c_str(), "wb");
+					if (fp) {
+						fwrite(local_m3u8_content.data(), 1, local_m3u8_content.size(), fp);
+						fclose(fp);
+
+						std::vector<std::string> safe_headers;
+						for (const auto& h : j.headers) {
+							std::string lower_h = h;
+							std::transform(lower_h.begin(), lower_h.end(), lower_h.begin(), ::tolower);
+							if (lower_h.find("authorization:") != std::string::npos ||
+								lower_h.find("cookie:") != std::string::npos) {
+								continue;
+							}
+							safe_headers.push_back(h);
+						}
+
+						std::cout << "[HLS] Processing local playlist through FFmpeg..." << std::endl;
+						ok = FFmpegHelper::convert_m3u8_to_ts(local_m3u8_path, j.out_path, safe_headers, proxy_, on_progress, msg);
+
+						std::error_code ec_rem;
+						std::filesystem::remove(std::filesystem::u8path(local_m3u8_path), ec_rem);
+					}
+					else {
+						ok = false;
+						msg = "Could not create local m3u8 file";
+					}
+				}
 			}
 
 			{
 				std::lock_guard<std::mutex> lk(mtx_);
-				for (auto& q : queue_) if (q.id == j.id)
-				{
-					q.filename = j.filename;
-					q.out_path = j.out_path;
+				auto it = std::find_if(queue_.begin(), queue_.end(), [&](const Job& q) { return q.id == j.id; });
+				if (it != queue_.end()) {
+					it->filename = j.filename;
+					it->out_path = j.out_path;
 					if (ok)
 					{
-						q.state = Job::State::Done;
-						q.message = "ok";
-						q.progress = 100.0;
-						if (q.course_id)
+						it->state = Job::State::Done;
+						it->message = "ok";
+						it->progress = 100.0;
+						if (it->course_id)
 						{
-							auto itp = progress_.find(q.course_id);
+							auto itp = progress_.find(it->course_id);
 							if (itp != progress_.end()) itp->second.done += 1;
 						}
 					}
 					else
 					{
-						q.state = Job::State::Failed;
-						q.message = msg.empty() ? "failed" : msg;
+						it->state = Job::State::Failed;
+						it->message = msg.empty() ? "failed" : msg;
+						std::cout << "[WORKER] JOB FAILED! Reason: " << it->message << std::endl;
 					}
-					break;
 				}
 			}
 		}

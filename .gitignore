@@ -27,3 +27,5 @@ settings.ini
 *.tmp
 *.part
 downloads/
+/.vs
+/enc_temp_folder
