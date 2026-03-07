@@ -2146,6 +2146,11 @@ void RequestHandler::worker_loop() {
 					}
 				}
 			}
+			else
+			{
+				std::cout << "[WORKER] Standard file (non-HLS) is downloading..." << std::endl;
+				ok = curl_download_file(j.url, j.out_path, j.headers, on_progress, msg);
+			}
 
 			{
 				std::lock_guard<std::mutex> lk(mtx_);
