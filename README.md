@@ -1,4 +1,11 @@
+
 # UdemySaver
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/Jadis0x/UdemySaver?color=75a9ff&style=flat-square)
+![C++](https://img.shields.io/badge/language-C%2B%2B20-00599C?style=flat-square&logo=c%2B%2B)
+![GitHub Repo stars](https://img.shields.io/github/stars/Jadis0x/UdemySaver?style=flat-square)
+![GitHub repo size](https://img.shields.io/github/repo-size/Jadis0x/UdemySaver?style=flat-square)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-yellow?style=flat-square&logo=buy-me-a-coffee)](https://www.buymeacoffee.com/jadis0x)
+
 UdemySaver is an open-source Udemy course downloader written in modern C++20. It lets you save videos, subtitles, and course assets you own for offline learning. 
 A built-in HTTP server powers a responsive web interface so you can browse your Udemy library, queue downloads, and monitor progress from any browser.
 
