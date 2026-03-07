@@ -11,6 +11,6 @@ public:
         const std::string& out_path,
         const std::vector<std::string>& extra_headers,
         const std::string& proxy,
-        std::function<void(double, double)> on_progress,
+        std::function<bool(double, double)> on_progress,
         std::string& msg);
 };

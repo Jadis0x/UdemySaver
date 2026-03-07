@@ -21,7 +21,7 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 	const std::string& out_path,
 	const std::vector<std::string>& extra_headers,
 	const std::string& proxy,
-	std::function<void(double, double)> on_progress,
+	std::function<bool(double, double)> on_progress,
 	std::string& msg) {
 	msg.clear();
 
@@ -46,25 +46,17 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 	long long estimated_total_bytes = 0;
 	long long bytes_written = 0;
 
-	auto report_progress = [&](bool force = false)
-		{
-			if (!on_progress) return;
-			auto now = std::chrono::steady_clock::now();
-			if (!force && now - last_progress < progress_interval) return;
-			last_progress = now;
+	auto report_progress = [&](bool force = false) -> bool {
+		if (!on_progress) return true;
+		auto now = std::chrono::steady_clock::now();
+		if (!force && now - last_progress < progress_interval) return true;
+		last_progress = now;
 
-			double total = static_cast<double>(estimated_total_bytes);
-			double current = static_cast<double>(bytes_written);
-			if (total > 0.0)
-			{
-				if (current > total) current = total;
-				on_progress(current, total);
-			}
-			else
-			{
-				on_progress(current, 0.0);
-			}
-		};
+		double total = static_cast<double>(estimated_total_bytes);
+		double current = static_cast<double>(bytes_written);
+
+		return on_progress(current > total && total > 0.0 ? total : current, total > 0.0 ? total : 0.0);
+	};
 
 	auto cleanup_ctx = [&]()
 		{
@@ -271,12 +263,11 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 	while (true)
 	{
 		ret = av_read_frame(in_ctx, pkt);
-		if (ret == AVERROR_EOF) break;
-		if (ret == AVERROR(EAGAIN))
-		{
-			continue;
-		}
-		if (ret < 0)
+
+		if (ret == AVERROR_EOF) break; 
+		if (ret == AVERROR(EAGAIN)) continue; 
+
+		if (ret < 0) 
 		{
 			av_packet_free(&pkt);
 			cleanup_ctx();
@@ -296,30 +287,26 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 
 		pkt->stream_index = out_stream->index;
 
-		if (pkt->pts != AV_NOPTS_VALUE)
-		{
+		if (pkt->pts != AV_NOPTS_VALUE) {
 			pkt->pts = av_rescale_q_rnd(pkt->pts, in_stream->time_base, out_stream->time_base,
 				(AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
 		}
-		if (pkt->dts != AV_NOPTS_VALUE)
-		{
+		if (pkt->dts != AV_NOPTS_VALUE) {
 			pkt->dts = av_rescale_q_rnd(pkt->dts, in_stream->time_base, out_stream->time_base,
 				(AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
 		}
-		if (pkt->duration > 0)
-		{
+		if (pkt->duration > 0) {
 			pkt->duration = av_rescale_q(pkt->duration, in_stream->time_base, out_stream->time_base);
 		}
 		pkt->pos = -1;
 
 		ret = av_interleaved_write_frame(out_ctx, pkt);
-		if (ret >= 0 && pkt->size > 0)
-		{
+		if (ret >= 0 && pkt->size > 0) {
 			bytes_written += pkt->size;
 		}
-		av_packet_unref(pkt);
-		if (ret < 0)
-		{
+		av_packet_unref(pkt); 
+
+		if (ret < 0) {
 			av_packet_free(&pkt);
 			cleanup_ctx();
 			cleanup_tmp();
@@ -328,7 +315,14 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 			return false;
 		}
 
-		report_progress();
+		if (!report_progress()) {
+			av_packet_free(&pkt);
+			cleanup_ctx();
+			cleanup_tmp();
+			msg = "Operation aborted by user";
+			std::cout << "[FFmpeg] Aborting download due to user request..." << std::endl;
+			return false;
+		}
 	}
 	av_packet_free(&pkt);
 
@@ -365,19 +359,8 @@ bool FFmpegHelper::convert_m3u8_to_ts(
 	{
 		std::error_code fec;
 		auto final_size = std::filesystem::file_size(out_path, fec);
-		if (!fec && final_size > 0)
-		{
-			estimated_total_bytes = static_cast<long long>(final_size);
-			on_progress(static_cast<double>(final_size), static_cast<double>(final_size));
-		}
-		else if (estimated_total_bytes > 0)
-		{
-			on_progress(static_cast<double>(estimated_total_bytes), static_cast<double>(estimated_total_bytes));
-		}
-		else
-		{
-			on_progress(1.0, 1.0);
-		}
+		double f_sz = (!fec && final_size > 0) ? static_cast<double>(final_size) : static_cast<double>(estimated_total_bytes);
+		on_progress(f_sz > 0 ? f_sz : 1.0, f_sz > 0 ? f_sz : 1.0);
 	}
 
 	std::cout << "[FFmpeg] Conversion completed successfully : " << out_path << std::endl;

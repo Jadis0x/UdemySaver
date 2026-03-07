@@ -1202,13 +1202,14 @@ static size_t file_write(void* ptr, size_t size, size_t nmemb, void* userdata) {
 	return fwrite(ptr, size, nmemb, fp);
 }
 
-static int curl_xferinfo_trampoline(void* clientp,
-	curl_off_t dltotal, curl_off_t dlnow,
-	curl_off_t /*ultotal*/, curl_off_t /*ulnow*/) {
-	using CB = std::function<void(double, double)>;
+static int curl_xferinfo_trampoline(void* clientp, curl_off_t dltotal, curl_off_t dlnow, ...) {
+	using CB = std::function<bool(double, double)>; 
 	auto* cb = reinterpret_cast<CB*>(clientp);
-	if (cb && *cb) (*cb)(static_cast<double>(dlnow), static_cast<double>(dltotal));
-	return 0; // continue
+	if (cb && *cb) {
+		bool continue_dl = (*cb)(static_cast<double>(dlnow), static_cast<double>(dltotal));
+		return continue_dl ? 0 : 1; 
+	}
+	return 0;
 }
 
 bool RequestHandler::curl_download_file(const std::string& url, const std::string& out_path, const std::vector<std::string>& extra_headers, std::function<void(double, double)> on_progress, std::string& msg) {
@@ -1899,6 +1900,11 @@ void RequestHandler::worker_loop() {
 		auto on_progress = [this, &j, &last_ts, &last_bytes](double dlnow, double dltotal)
 			{
 				std::lock_guard<std::mutex> lk(mtx_);
+
+				if (paused_courses_.count(j.course_id) || stop_) {
+					return false;
+				}
+
 				j.bytes_now = static_cast<long long>(dlnow);
 				j.bytes_total = static_cast<long long>(dltotal);
 				double ts = now_sec();
@@ -1923,6 +1929,8 @@ void RequestHandler::worker_loop() {
 					it->filename = j.filename;
 					it->out_path = j.out_path;
 				}
+
+				return true;
 			};
 
 		{
@@ -2171,9 +2179,19 @@ void RequestHandler::worker_loop() {
 					}
 					else
 					{
-						it->state = Job::State::Failed;
-						it->message = msg.empty() ? "failed" : msg;
-						std::cout << "[WORKER] JOB FAILED! Reason: " << it->message << std::endl;
+						std::string lower_msg = msg;
+						std::transform(lower_msg.begin(), lower_msg.end(), lower_msg.begin(), ::tolower);
+
+						if (lower_msg.find("aborted") != std::string::npos || lower_msg.find("user") != std::string::npos) {
+							it->state = Job::State::Paused; 
+							it->message = "paused";
+							std::cout << "[WORKER] Job PAUSED by user." << std::endl;
+						}
+						else {
+							it->state = Job::State::Failed; 
+							it->message = msg.empty() ? "failed" : msg;
+							std::cout << "[WORKER] JOB FAILED! Reason: " << it->message << std::endl;
+						}
 					}
 				}
 			}
