@@ -185,6 +185,25 @@ async function saveTokenFromUI(){
 }
 
 /* ===== session ===== */
+function toggleAuthUI() {
+    const hero = document.querySelector('.hero');
+    const queuePanel = document.getElementById('queue');
+    const searchBox = document.getElementById('searchBox');
+    const gridEl = document.getElementById('grid');
+    
+    if (state.auth) {
+        if (hero) hero.style.display = '';
+        if (gridEl) gridEl.style.display = ''; 
+        if (queuePanel) queuePanel.style.display = '';
+        if (searchBox) searchBox.style.display = '';
+    } else {
+        if (hero) hero.style.display = 'none';
+        if (gridEl) gridEl.style.display = 'none';
+        if (queuePanel) queuePanel.style.display = 'none';
+        if (searchBox) searchBox.style.display = 'none';
+    }
+}
+
 async function loadSession(){
     const data = await getJSON('/session');
     state.auth = !!data.auth;
@@ -206,6 +225,7 @@ async function loadSession(){
         if (authWarn) authWarn.style.display = 'block';
         if (signOutBtn) signOutBtn.style.display = 'none';
     }
+    toggleAuthUI();
 }
 
 async function signOut(){
@@ -229,18 +249,31 @@ async function loadPage(p=1){
     const data = await getJSON(`/courses?page=${state.page}&page_size=${state.page_size}&search=${q}`);
 
     state.total = data.total || 0;
-    state.auth = data.auth ?? state.auth;
+    state.auth = !!data.auth;
     state.items = Array.isArray(data.courses) ? data.courses : (data.results || []);
 
-    if (countInfo) countInfo.textContent = state.total ? `(${state.total} ${t('library.count_suffix')})` : '';
-    renderGrid(); 
-    renderPager();
+    toggleAuthUI();
+
+    if (countInfo) countInfo.textContent = state.total ? `${state.total} ${t('library.count_suffix')}` : '';
+    
+    if (state.auth) {
+        renderGrid(); 
+        renderPager();
+    }
 }
 
+/* ===== courses ===== */
 function renderGrid(){
-    if(!grid) return; grid.innerHTML = '';
+    if(!grid) return; 
+    grid.innerHTML = '';
     let items = state.items;
-    if(items.length===0){ grid.innerHTML=`<div class="empty">${t('grid.empty')}</div>`; return; }
+    
+    if(items.length === 0){ 
+        grid.innerHTML = `<div class="empty">${t('grid.empty')}</div>`; 
+        return; 
+    }
+
+    const fragment = document.createDocumentFragment();
 
     for(const c of items){
         const el = document.createElement('div');
@@ -249,7 +282,7 @@ function renderGrid(){
         <div class="thumb-wrap">
             <input type="checkbox" class="select-cb" data-id="${c.id}" ${selectedCourses.has(c.id)?'checked':''}>
             <div class="thumb-overlay"></div>
-            <img class="thumb" src="${imageOrPlaceholder(c.image)}" alt="">
+            <img class="thumb" loading="lazy" src="${imageOrPlaceholder(c.image)}" alt="">
             <span class="badge"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg> ${c.id}</span>
         </div>
         <div class="body">
@@ -259,7 +292,7 @@ function renderGrid(){
                 ${c.instructor||'Instructor'}
             </div>
             <div class="row">
-                <button class="btn primary" data-id="${c.id}">
+                <button class="btn primary dl-btn" data-id="${c.id}">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                     ${t('card.download')}
                 </button>
@@ -268,12 +301,32 @@ function renderGrid(){
                 </a>
             </div>
         </div>`;
-        el.querySelector('.btn.primary').addEventListener('click', ()=> queueWholeCourse(c, preferredQuality()));
-        const cb = el.querySelector('.select-cb');
-        if(cb) cb.addEventListener('change', ()=> toggleCourseSelection(c, cb.checked));
-        grid.appendChild(el);
+        
+        fragment.appendChild(el); 
     }
+    
+    grid.appendChild(fragment);
     updateSelectedUI();
+}
+
+if (!grid.dataset.listenerAttached) {
+    grid.addEventListener('click', (e) => {
+        const dlBtn = e.target.closest('.dl-btn');
+        if (dlBtn) {
+            const courseId = parseInt(dlBtn.getAttribute('data-id'), 10);
+            const course = state.items.find(c => c.id === courseId);
+            if (course) queueWholeCourse(course, preferredQuality());
+            return;
+        }
+        
+        const cb = e.target.closest('.select-cb');
+        if (cb) {
+            const courseId = parseInt(cb.getAttribute('data-id'), 10);
+            const course = state.items.find(c => c.id === courseId);
+            if (course) toggleCourseSelection(course, cb.checked);
+        }
+    });
+    grid.dataset.listenerAttached = 'true';
 }
 
 function renderPager(){
@@ -387,13 +440,13 @@ async function enqueueLecture(course, lecture, idxInCourse, pref="720", opts={})
     }; 
 
     const videoPayload = {...base, url:picked.url, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)}-${picked.label}.mp4`, is_video: true, quality: pref};
-    let r = await fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(videoPayload)}); 
-    let data = await r.json().catch(()=>({ok:false}));
     
-    if(data.skipped){
-        if(data.reason==='exists') toast(t('toast.exists',{title: lecture.title}));
-        else if(data.reason==='queued') toast(t('toast.queued',{title: lecture.title}));
-    }
+    const queueTasks = [];
+    
+    queueTasks.push(
+        fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(videoPayload)})
+            .then(r => r.json()).catch(()=>({ok:false}))
+    );
 
     if(opts.subs && Array.isArray(asset.captions)){ 
         for(const cap of asset.captions){ 
@@ -401,8 +454,8 @@ async function enqueueLecture(course, lecture, idxInCourse, pref="720", opts={})
             const lang = safe(cap.language || cap.label || 'sub'); 
             const ext = (url.split(/[#?]/)[0].split('.').pop()||'vtt'); 
             const p = {...base, url, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)}.${lang}.${ext}`}; 
-            await fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}); 
-            await delay(50); 
+            
+            queueTasks.push(fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}));
         } 
     } 
 
@@ -421,11 +474,20 @@ async function enqueueLecture(course, lecture, idxInCourse, pref="720", opts={})
             }
             if(!url) continue;
             const p = {...base, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)} - ${sanitizeFilename(name)}`, asset_id:a.id, url};
-            await fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
-            await delay(200); 
+            
+            queueTasks.push(fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}));
         }
     }
-    return data; 
+    
+    const results = await Promise.all(queueTasks);
+    const videoData = results[0]; 
+    
+    if(videoData && videoData.skipped){
+        if(videoData.reason==='exists') toast(t('toast.exists',{title: lecture.title}));
+        else if(videoData.reason==='queued') toast(t('toast.queued',{title: lecture.title}));
+    }
+
+    return videoData;
 }
 
 async function queueWholeCourse(course, preference="720"){ 
@@ -463,7 +525,7 @@ async function queueWholeCourse(course, preference="720"){
                 else if(res && res.ok) added++; 
                 else skipped++; 
                 if(seen%5===0) qTick(true); 
-                await delay(150);
+                await delay(50);
             } 
             if(j.next) { page++; setBusyTextTextual(`${seen}/${knownTotal ?? '…'}`, "Loading..."); await delay(1500); } else break; 
         } 
@@ -610,7 +672,7 @@ let searchTimer = null;
 if(qInput) qInput.addEventListener('input', () => { 
     state.filter = (qInput.value || '').trim();
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => { loadPage(1); }, 600);
+    searchTimer = setTimeout(() => { loadPage(1); }, 500);
 });
 if(signOutBtn) signOutBtn.addEventListener('click', signOut);
 if(settingsBtn && settingsPanel) settingsBtn.addEventListener('click', ()=>{ settingsPanel.style.display = (settingsPanel.style.display==='none' || settingsPanel.style.display==='') ? 'block' : 'none'; });
@@ -631,7 +693,8 @@ if (langSelect) {
 window.addEventListener('load', async ()=>{
   await loadLang(detectLang());
   await loadSession();        
-  await loadPage(1);          
+  await loadPage(1);   
+  loadOpts();
   applyI18n(); 
   qTick(true);
   setInterval(()=>qTick(false),1500);
