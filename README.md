@@ -95,7 +95,7 @@ You can also start the program without a token and paste it via the web interfac
 5. Files are saved under a `downloads/` directory.
 
 ## Demo Video
-[![UdemySaver Demo](https://img.youtube.com/vi/z6ltMWevtK4/0.jpg)](https://youtu.be/z6ltMWevtK4)
+[![UdemySaver Demo](https://img.youtube.com/vi/XLbq7OacdHE/0.jpg)](https://youtu.be/XLbq7OacdHE)
 
 ## Cloudflare Bypass
 
