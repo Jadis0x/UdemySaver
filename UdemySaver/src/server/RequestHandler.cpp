@@ -38,6 +38,7 @@ extern "C" {
 // utils/helper
 #include "FFmpegHelper.h"
 #include "Helper.h"
+#include "EncryptedDashHelper.h"
 
 using boost::beast::http::status;
 using json = nlohmann::json;
@@ -441,12 +442,14 @@ std::pair<boost::beast::http::status, std::string> RequestHandler::handleSetting
 		std::string new_token = token_;
 		std::string new_api = api_base_;
 		std::string new_proxy = proxy_;
+		std::string new_client_id = client_id_;
 		bool new_subs = download_subtitles_;
 		bool new_assets = download_assets_;
 
 		if (in.contains("udemy_access_token")) new_token = in.value("udemy_access_token", std::string{});
 		if (in.contains("udemy_api_base"))    new_api = in.value("udemy_api_base", std::string{});
 		if (in.contains("http_proxy"))        new_proxy = in.value("http_proxy", std::string{});
+		if (in.contains("udemy_client_id"))   new_client_id = in.value("udemy_client_id", std::string{});
 		if (in.contains("download_subtitles")) new_subs = in.value("download_subtitles", false);
 		if (in.contains("download_assets"))    new_assets = in.value("download_assets", false);
 
@@ -460,6 +463,7 @@ std::pair<boost::beast::http::status, std::string> RequestHandler::handleSetting
 		new_token = trim2(new_token);
 		new_api = trim2(new_api);
 		new_proxy = trim2(new_proxy);
+		new_client_id = trim2(new_client_id);
 		if (new_api.empty()) new_api = "https://www.udemy.com";
 
 		{
@@ -471,6 +475,7 @@ std::pair<boost::beast::http::status, std::string> RequestHandler::handleSetting
 			}
 			f << "# UdemySaver settings\n";
 			f << "udemy_access_token=" << new_token << "\n";
+			f << "udemy_client_id=" << new_client_id << "\n";
 			f << "udemy_api_base=" << new_api << "\n";
 			if (!new_proxy.empty()) f << "http_proxy=" << new_proxy << "\n";
 			f << "download_subtitles=" << (new_subs ? "true" : "false") << "\n";
@@ -479,6 +484,7 @@ std::pair<boost::beast::http::status, std::string> RequestHandler::handleSetting
 		}
 
 		token_ = new_token;
+		client_id_ = new_client_id;
 		api_base_ = new_api;
 		proxy_ = new_proxy;
 		download_subtitles_ = new_subs;
@@ -1325,7 +1331,35 @@ std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id
 
 	auto& a = j["asset"];
 	if (is_drm_protected_asset(j) || is_drm_protected_asset(a))
-		throw std::runtime_error(kDrmProtectedMessage);
+	{
+		auto find_encrypted_dash_source = [](const json& asset) -> std::string
+			{
+				if (!asset.contains("media_sources") || !asset["media_sources"].is_array()) return {};
+				for (const auto& source : asset["media_sources"])
+				{
+					if (!source.is_object()) continue;
+					std::string src = source.value("src", source.value("file", source.value("url", std::string{})));
+					std::string type = source.value("type", std::string{});
+					std::transform(type.begin(), type.end(), type.begin(),
+						[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+					std::string lower_src = src;
+					std::transform(lower_src.begin(), lower_src.end(), lower_src.begin(),
+						[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+					if (!src.empty() && (lower_src.find(".mpd") != std::string::npos ||
+						type.find("dash") != std::string::npos || type.find("mpd") != std::string::npos)) {
+						return src;
+					}
+				}
+				return {};
+			};
+
+		std::string encrypted_dash_url = find_encrypted_dash_source(a);
+		if (encrypted_dash_url.empty())
+			throw std::runtime_error("DRM asset has no encrypted DASH/MPD source");
+
+		std::cout << "[DRM] Encrypted DASH source selected; content will not be decrypted." << std::endl;
+		return encrypted_dash_url;
+	}
 
 	auto is_exact_1080 = [](const std::string& s) -> bool
 		{
@@ -1850,6 +1884,7 @@ void RequestHandler::worker_loop() {
 		std::string lower_url = j.url;
 		std::transform(lower_url.begin(), lower_url.end(), lower_url.begin(), [](unsigned char c) { return (char)std::tolower(c); });
 		bool is_hls = lower_url.find(".m3u8") != std::string::npos;
+		bool is_encrypted_dash = lower_url.find(".mpd") != std::string::npos;
 
 		std::cout << "\n==================================================" << std::endl;
 		std::cout << "[WORKER] PROCESSING STARTED" << std::endl;
@@ -1866,6 +1901,13 @@ void RequestHandler::worker_loop() {
 			target_path.replace_extension(".mp4");
 			j.filename = Helper::path_to_utf8(target_path.filename());
 			std::cout << "[HLS] Downloading HLS stream to MP4: " << Helper::path_to_utf8(target_path) << std::endl;
+		}
+		else if (is_encrypted_dash)
+		{
+			target_path.replace_extension();
+			target_path += ".encrypted";
+			j.filename = Helper::path_to_utf8(target_path.filename()) + ".video.mp4";
+			std::cout << "[DRM] Encrypted DASH output base: " << Helper::path_to_utf8(target_path) << std::endl;
 		}
 
 		j.out_path = Helper::path_to_utf8(target_path);
@@ -1925,7 +1967,29 @@ void RequestHandler::worker_loop() {
 			std::string msg = "";
 			bool ok = false;
 
-			if (is_hls)
+			if (is_encrypted_dash)
+			{
+				j.out_path = Helper::path_to_utf8(target_path) + ".video.mp4";
+				{
+					std::lock_guard<std::mutex> lk(mtx_);
+					auto it = std::find_if(queue_.begin(), queue_.end(), [&](const Job& q) { return q.id == j.id; });
+					if (it != queue_.end()) {
+						it->filename = j.filename;
+						it->out_path = j.out_path;
+					}
+				}
+				std::vector<std::string> safe_headers;
+				for (const auto& h : j.headers) {
+					std::string lower_h = h;
+					std::transform(lower_h.begin(), lower_h.end(), lower_h.begin(),
+						[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+					if (lower_h.rfind("authorization:", 0) == 0 || lower_h.rfind("cookie:", 0) == 0) continue;
+					safe_headers.push_back(h);
+				}
+				ok = EncryptedDashHelper::download(j.url, Helper::path_to_utf8(target_path),
+					safe_headers, proxy_, on_progress, msg);
+			}
+			else if (is_hls)
 			{
 				std::cout << "[HLS] Intercepting Playlist to bypass CDN Auth checks..." << std::endl;
 				std::string variant_m3u8_body;

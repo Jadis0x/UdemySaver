@@ -65,6 +65,11 @@ http_proxy=http://127.0.0.1:8888
 download_subtitles=true
 download_assets=true
 ```
+
+DRM-protected DASH lectures are preserved as separate encrypted video and audio
+fragmented-MP4 files. UdemySaver downloads the MPD initialization and media
+segments directly with libcurl. It does not request a DRM license, decrypt the
+result, or make the downloaded files playable.
 You can also start the program without a token and paste it via the web interface; the file will be created automatically.
 
 **Note:** Due to Cloudflare protection on Udemy's API, you need to use a proxy like mitmproxy to bypass bot detection. See the "Cloudflare Bypass" section below.

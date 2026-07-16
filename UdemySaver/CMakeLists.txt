@@ -7,6 +7,8 @@ set (SOURCES
     "src/server/RequestHandler.cpp"
     "utils/FFmpegHelper.h"
     "utils/FFmpegHelper.cpp"
+    "utils/EncryptedDashHelper.h"
+    "utils/EncryptedDashHelper.cpp"
     )
 
 if (WIN32)
