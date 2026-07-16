@@ -1,7 +1,3 @@
-﻿message(STATUS "DEBUG: VCPKG_ROOT is $ENV{VCPKG_ROOT}")
-message(STATUS "DEBUG: CMAKE_TOOLCHAIN_FILE is ${CMAKE_TOOLCHAIN_FILE}")
-message(STATUS "DEBUG: VCPKG_TARGET_TRIPLET is ${VCPKG_TARGET_TRIPLET}")
-
 # Add source to this project's executable.
 set (SOURCES 
     "src/main.cpp"
@@ -27,45 +23,49 @@ target_include_directories(UdemySaver PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
 )
 
-# Curl
-find_package(CURL QUIET)
-if(NOT CURL_FOUND)
-    message(FATAL_ERROR 
-        "\n[ERROR] CURL library not found!\n"
-        "To fix this, please run the following command in your terminal:\n"
-        "  vcpkg install curl:x64-windows\n"
-    )
-endif()
-target_link_libraries(UdemySaver PRIVATE CURL::libcurl)
+# Third-party C++ dependencies are fetched at configure time. This keeps the
+# build independent from a vcpkg triplet and uses the active toolchain's CPU
+# architecture (including arm64 on Apple Silicon).
+set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(curl
+    GIT_REPOSITORY https://github.com/curl/curl.git
+    GIT_TAG curl-8_10_1
+    GIT_SHALLOW TRUE
+)
 
-# boost-beast
-find_package(Boost QUIET)
-if(NOT Boost_FOUND)
-    message(FATAL_ERROR 
-        "\n[ERROR] Boost (Beast) library not found!\n"
-        "To fix this, please run the following command in your terminal:\n"
-        "  vcpkg install boost-beast:x64-windows\n"
-    )
-endif()
-target_link_libraries(UdemySaver PRIVATE Boost::boost)
+# Beast and Asio are header-only for this application. Fetch only the Boost
+# libraries needed to expose those headers.
+set(BOOST_INCLUDE_LIBRARIES asio;beast;config;core;system;throw_exception;type_traits CACHE STRING "" FORCE)
+FetchContent_Declare(boost
+    GIT_REPOSITORY https://github.com/boostorg/boost.git
+    GIT_TAG boost-1.86.0
+    GIT_SHALLOW TRUE
+    GIT_SUBMODULES_RECURSE TRUE
+)
 
-# nlohmann_json
-find_package(nlohmann_json CONFIG QUIET)
-if(NOT nlohmann_json_FOUND)
-    message(FATAL_ERROR 
-        "\n[ERROR] nlohmann_json not found!\n"
-        "To fix this, please run the following command in your terminal:\n"
-        "  vcpkg install nlohmann-json:x64-windows\n"
-    )
-endif()
-target_link_libraries(UdemySaver PRIVATE nlohmann_json::nlohmann_json)
+FetchContent_Declare(nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.3
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(curl boost nlohmann_json)
+
+target_link_libraries(UdemySaver PRIVATE
+    libcurl
+    Boost::headers
+    nlohmann_json::nlohmann_json
+)
 
 find_package(FFMPEG QUIET)
 if(NOT FFMPEG_FOUND)
     message(FATAL_ERROR 
         "\n[ERROR] FFMPEG not found!\n"
-        "To fix this, please run the following command in your terminal:\n"
-        "  vcpkg install ffmpeg[avcodec,avformat,avutil]:x64-windows\n"
+        "Install a native FFmpeg development package, then configure again.\n"
+        "  macOS (Apple Silicon): brew install ffmpeg pkg-config\n"
+        "  Ubuntu/Debian:          sudo apt install libavcodec-dev libavformat-dev libavutil-dev pkg-config\n"
+        "  Windows:                install FFmpeg headers and libraries, then set CMAKE_PREFIX_PATH\n"
     )
 endif()
 target_include_directories(UdemySaver PRIVATE ${FFMPEG_INCLUDE_DIRS})

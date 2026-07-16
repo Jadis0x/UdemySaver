@@ -44,6 +44,26 @@ using json = nlohmann::json;
 
 namespace {
 	constexpr const char* kDefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+	constexpr const char* kDrmProtectedMessage = "DRM-protected content cannot be downloaded.";
+
+	bool is_drm_protected_asset(const nlohmann::json& asset) {
+		if (!asset.is_object()) return false;
+		auto license_token = asset.find("media_license_token");
+		return asset.value("course_is_drmed", false) ||
+			asset.value("is_drmed", false) ||
+			asset.value("drm_protected", false) ||
+			(license_token != asset.end() && license_token->is_string() && !license_token->get<std::string>().empty());
+	}
+
+	bool is_drm_protected_playlist(const std::string& playlist) {
+		std::string value = playlist;
+		std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		return (value.find("#ext-x-key") != std::string::npos && value.find("method=none") == std::string::npos) ||
+			value.find("#ext-x-session-key") != std::string::npos ||
+			value.find("widevine") != std::string::npos ||
+			value.find("playready") != std::string::npos ||
+			value.find("fairplay") != std::string::npos;
+	}
 }
 
 std::vector<std::string> get_browser_headers() {
@@ -589,45 +609,6 @@ RequestHandler::handleCourses(int page, int page_size, const std::string& query)
 }
 
 
-// ---------------- download (generic raw) ----------------
-std::pair<status, std::string> RequestHandler::handleDownloadRaw(const std::string& body) {
-	json out;
-	try
-	{
-		json in = json::parse(body);
-		std::string url;
-		int course_id = in.value("course_id", 0);
-		int lecture_id = in.value("lecture_id", 0);
-		std::string quality = in.value("quality", "720");
-		if (course_id && lecture_id)
-		{
-			url = resolve_lecture_stream(course_id, lecture_id, quality);
-		}
-		else if (in.contains("url") && in["url"].is_string())
-		{
-			url = in["url"].get<std::string>();
-		}
-		else
-		{
-			throw std::runtime_error("missing url or course_id/lecture_id");
-		}
-
-		json q;
-		q["url"] = url;
-		q["filename"] = in.value("filename", "output.mp4");
-		q["course_id"] = course_id;
-		q["course_title"] = in.value("course_title", std::string{});
-		auto [st, resp] = handleQueueAdd(q.dump());
-		return { st, resp };
-	}
-	catch (const std::exception& e)
-	{
-		out["ok"] = false; out["error"] = e.what();
-		return { status::bad_request, out.dump() };
-	}
-}
-
-
 std::pair<boost::beast::http::status, std::string>
 RequestHandler::handleLectures(int course_id, int page, int page_size) {
 	using boost::beast::http::status;
@@ -724,13 +705,15 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 		std::string pref = in.value("quality", "1080");
 		std::string in_url = in.value("url", std::string{});
 
-		if (in_url.empty())
+		if (is_video && course_id_val > 0 && lecture_id > 0) {
+			// Never trust a client-provided video URL: resolving here guarantees DRM
+			// metadata is checked before the job enters the queue.
+			in_url = resolve_lecture_stream(course_id_val, lecture_id, pref);
+		}
+		else if (in_url.empty())
 		{
-			if (is_video && course_id_val > 0 && lecture_id > 0) {
-				in_url = resolve_lecture_stream(course_id_val, lecture_id, pref);
-			}
-			else if (asset_id > 0 && course_id_val > 0 && lecture_id > 0) {
-				try { in_url = resolve_supplementary_asset(course_id_val, lecture_id, asset_id); }
+			if (asset_id > 0 && course_id_val > 0 && lecture_id > 0) {
+				try { in_url = resolve_supplementary_asset(asset_id); }
 				catch (...) { if (in_url.empty()) throw; }
 			}
 		}
@@ -1341,6 +1324,8 @@ std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id
 		throw std::runtime_error("lecture has no asset");
 
 	auto& a = j["asset"];
+	if (is_drm_protected_asset(j) || is_drm_protected_asset(a))
+		throw std::runtime_error(kDrmProtectedMessage);
 
 	auto is_exact_1080 = [](const std::string& s) -> bool
 		{
@@ -1451,8 +1436,8 @@ std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id
 
 		auto pick_variant_from_master = [&](const std::string& master_url, const std::string& playlist) -> std::string
 			{
-				if (playlist.find("#EXT-X-KEY") != std::string::npos)
-					throw std::runtime_error("Encrypted stream. Exiting.");
+				if (is_drm_protected_playlist(playlist))
+					throw std::runtime_error(kDrmProtectedMessage);
 
 				struct Variant {
 					std::string uri;
@@ -1594,7 +1579,7 @@ std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id
 			}
 			catch (const std::runtime_error& e)
 			{
-				if (std::string(e.what()) == "Encrypted stream. Exiting.") throw;
+				if (std::string(e.what()) == kDrmProtectedMessage) throw;
 			}
 			catch (...)
 			{
@@ -1800,7 +1785,7 @@ std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id
 	throw std::runtime_error("no stream url found in lecture");
 }
 
-std::string RequestHandler::resolve_supplementary_asset(int course_id, int lecture_id, int asset_id) {
+std::string RequestHandler::resolve_supplementary_asset(int asset_id) {
 	std::ostringstream url;
 	url << api_base_ << "/api-2.0/assets/" << asset_id
 		<< "/?fields[asset]=download_urls,download_url,external_url,filename,asset_type";
@@ -2081,6 +2066,11 @@ void RequestHandler::worker_loop() {
 							}
 						}
 					}
+				}
+
+				if (ok && is_drm_protected_playlist(variant_m3u8_body)) {
+					ok = false;
+					msg = kDrmProtectedMessage;
 				}
 
 				if (ok) {

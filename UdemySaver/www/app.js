@@ -439,7 +439,8 @@ async function enqueueLecture(course, lecture, idxInCourse, pref="720", opts={})
         lecture_id: lecture.id 
     }; 
 
-    const videoPayload = {...base, url:picked.url, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)}-${picked.label}.mp4`, is_video: true, quality: pref};
+    // Resolve video URLs on the server so its DRM check always runs before queueing.
+    const videoPayload = {...base, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)}-${picked.label}.mp4`, is_video: true, quality: pref};
     
     const queueTasks = [];
     
@@ -523,7 +524,7 @@ async function queueWholeCourse(course, preference="720"){
                 const res = await enqueueLecture(course, lec, seen, preference, opts); 
                 if(res && res.skipped && res.reason==='exists') exists++; 
                 else if(res && res.ok) added++; 
-                else skipped++; 
+                else { skipped++; if(res && res.error) toast(res.error); }
                 if(seen%5===0) qTick(true); 
                 await delay(50);
             } 

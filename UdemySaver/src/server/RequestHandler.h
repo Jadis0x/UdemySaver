@@ -66,8 +66,6 @@ public:
 
 	std::pair<boost::beast::http::status, std::string> handleCourses(int page, int page_size, const std::string& query = "");
 
-	std::pair<boost::beast::http::status, std::string> handleDownloadRaw(const std::string& body);
-
 	std::pair<boost::beast::http::status, std::string>
 		handleLectures(int course_id, int page, int page_size = 100);
 
@@ -108,7 +106,7 @@ private:
 	std::string resolve_lecture_stream(int course_id, int lecture_id,
 									   const std::string& prefer_quality = "Auto");
 
-	std::string resolve_supplementary_asset(int course_id, int lecture_id, int asset_id);
+	std::string resolve_supplementary_asset(int asset_id);
 
 	void worker_loop();
 

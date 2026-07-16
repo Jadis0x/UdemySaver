@@ -23,11 +23,8 @@ A built-in HTTP server powers a responsive web interface so you can browse your 
 | Tool/Library           | Notes                     |
 | ---------------------- | ------------------------- |
 | C++20 compiler         | MSVC / Clang / GCC        |
-| CMake ≥ 3.8            | Build system              |
-| Boost (system, thread, beast) | Networking primitives     |
-| libcurl                | HTTP requests & downloads |
-| nlohmann\_json         | JSON parsing              |
-| FFmpeg                 | Video processing          |
+| CMake 3.20 or newer     | Build system              |
+| FFmpeg + pkg-config     | Native video processing dependency |
 
 ## Build from source
 
@@ -40,16 +37,18 @@ cmake --build build
 ```
 
 ### macOS
-On macOS, use Homebrew to install dependencies:
+On macOS, install the native FFmpeg dependency with Homebrew. Curl, Boost and
+nlohmann_json are downloaded automatically by CMake for the active CPU architecture.
 
 ```bash
 # Install dependencies
-brew install curl boost nlohmann-json ffmpeg cmake
+brew install ffmpeg pkg-config cmake
 
 # Clone and build
 git clone https://github.com/jadis0x/UdemySaver.git
 cd UdemySaver
-cmake -S . -B build
+rm -rf build # required if this directory was previously configured as x86_64
+cmake -S . -B build -DCMAKE_OSX_ARCHITECTURES=arm64
 cmake --build build
 ```
 
