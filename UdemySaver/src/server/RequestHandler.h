@@ -28,6 +28,7 @@ public:
 	struct Job {
 		uint64_t id = 0;
 		std::string url;
+		std::string drm_license_url;
 		std::string filename;
 		std::vector<std::string> headers;
 
@@ -104,7 +105,8 @@ private:
 
 
 	std::string resolve_lecture_stream(int course_id, int lecture_id,
-									   const std::string& prefer_quality = "Auto");
+									   const std::string& prefer_quality = "Auto",
+									   std::string* drm_license_url = nullptr);
 
 	std::string resolve_supplementary_asset(int asset_id);
 

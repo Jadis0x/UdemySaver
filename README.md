@@ -24,7 +24,7 @@ A built-in HTTP server powers a responsive web interface so you can browse your 
 | ---------------------- | ------------------------- |
 | C++20 compiler         | MSVC / Clang / GCC        |
 | CMake 3.20 or newer     | Build system              |
-| FFmpeg + pkg-config     | Native video processing dependency |
+| Internet connection    | CMake fetches curl, Boost, JSON and FFmpeg on Windows |
 
 ## Build from source
 
@@ -32,9 +32,12 @@ A built-in HTTP server powers a responsive web interface so you can browse your 
 ```bash
 git clone https://github.com/jadis0x/UdemySaver.git
 cd UdemySaver
-cmake -S . -B build
-cmake --build build
+cmake --preset x64-release --fresh
+cmake --build --preset x64-release
 ```
+
+The Windows build does not use vcpkg. CMake fetches an LGPL shared FFmpeg
+development package and copies its runtime DLLs next to `UdemySaver.exe`.
 
 ### macOS
 On macOS, install the native FFmpeg dependency with Homebrew. Curl, Boost and
@@ -69,7 +72,10 @@ download_assets=true
 DRM-protected DASH lectures are preserved as separate encrypted video and audio
 fragmented-MP4 files. UdemySaver downloads the MPD initialization and media
 segments directly with libcurl. It does not request a DRM license, decrypt the
-result, or make the downloaded files playable.
+result, or make the downloaded files playable. A per-lecture
+`.encrypted.drm.json` sidecar stores PSSH values from the MPD and the transient
+license URL supplied by the lecture API. Treat it as sensitive because that URL
+can contain an authentication token.
 You can also start the program without a token and paste it via the web interface; the file will be created automatically.
 
 **Note:** Due to Cloudflare protection on Udemy's API, you need to use a proxy like mitmproxy to bypass bot detection. See the "Cloudflare Bypass" section below.

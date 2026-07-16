@@ -8,11 +8,14 @@
 #endif
 
 #include <curl/curl.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -29,6 +32,31 @@ struct CurlHandle {
     ~CurlHandle() { if (value) curl_easy_cleanup(value); }
 };
 
+#ifdef _WIN32
+std::wstring extended_utf8_path(const std::string& value) {
+    if (value.empty()) return {};
+    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+        value.data(), static_cast<int>(value.size()), nullptr, 0);
+    if (size <= 0) return {};
+    std::wstring wide(static_cast<std::size_t>(size), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+        value.data(), static_cast<int>(value.size()), wide.data(), size) <= 0) return {};
+
+    const DWORD absolute_size = GetFullPathNameW(wide.c_str(), 0, nullptr, nullptr);
+    if (absolute_size > 0) {
+        std::wstring absolute(static_cast<std::size_t>(absolute_size), L'\0');
+        const DWORD written = GetFullPathNameW(wide.c_str(), absolute_size, absolute.data(), nullptr);
+        if (written > 0) {
+            absolute.resize(written);
+            wide = std::move(absolute);
+        }
+    }
+    if (wide.rfind(L"\\\\?\\", 0) == 0) return wide;
+    if (wide.rfind(L"\\\\", 0) == 0) return L"\\\\?\\UNC\\" + wide.substr(2);
+    return L"\\\\?\\" + wide;
+}
+#endif
+
 FILE* open_utf8_file(const std::string& path, const char* mode) {
 #ifdef _WIN32
     auto to_wide = [](const std::string& value) {
@@ -41,7 +69,7 @@ FILE* open_utf8_file(const std::string& path, const char* mode) {
             value.data(), static_cast<int>(value.size()), result.data(), size) <= 0) return std::wstring{};
         return result;
     };
-    const std::wstring wide_path = to_wide(path);
+    const std::wstring wide_path = extended_utf8_path(path);
     const std::wstring wide_mode = to_wide(mode);
     if (wide_path.empty() || wide_mode.empty()) return nullptr;
     FILE* file = nullptr;
@@ -49,6 +77,30 @@ FILE* open_utf8_file(const std::string& path, const char* mode) {
 #else
     return std::fopen(path.c_str(), mode);
 #endif
+}
+
+void remove_utf8_file(const std::string& path) {
+#ifdef _WIN32
+    const std::wstring wide = extended_utf8_path(path);
+    if (!wide.empty()) _wremove(wide.c_str());
+#else
+    std::remove(path.c_str());
+#endif
+}
+
+bool rename_utf8_file(const std::string& from, const std::string& to, std::string& error) {
+#ifdef _WIN32
+    const std::wstring wide_from = extended_utf8_path(from);
+    const std::wstring wide_to = extended_utf8_path(to);
+    if (wide_from.empty() || wide_to.empty()) { error = "invalid UTF-8 output path"; return false; }
+    _wremove(wide_to.c_str());
+    if (_wrename(wide_from.c_str(), wide_to.c_str()) == 0) return true;
+#else
+    std::remove(to.c_str());
+    if (std::rename(from.c_str(), to.c_str()) == 0) return true;
+#endif
+    error = std::strerror(errno);
+    return false;
 }
 
 size_t write_string(void* data, size_t size, size_t count, void* userdata) {
@@ -306,6 +358,7 @@ int transfer_progress(void* userdata, curl_off_t, curl_off_t downloaded, curl_of
 }
 
 bool append_url(
+    CURL* curl,
     const std::string& url,
     FILE* file,
     long long& bytes,
@@ -314,35 +367,38 @@ bool append_url(
     std::function<bool(double, double)>& callback,
     std::string& msg) {
     for (int attempt = 1; attempt <= 3; ++attempt) {
-        CurlHandle curl;
-        if (!curl.value) { msg = "curl init failed"; return false; }
+        if (!curl) { msg = "curl init failed"; return false; }
+        // Reset options but retain libcurl's connection cache. Creating a new
+        // easy handle per small DASH segment repeats DNS/TLS and is very slow.
+        curl_easy_reset(curl);
         curl_slist* header_list = nullptr;
         for (const auto& header : headers) header_list = curl_slist_append(header_list, header.c_str());
         std::string payload;
         ProgressContext progress_context{ &callback, bytes };
 
-        curl_easy_setopt(curl.value, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl.value, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl.value, CURLOPT_MAXREDIRS, 8L);
-        curl_easy_setopt(curl.value, CURLOPT_USERAGENT, kUserAgent);
-        curl_easy_setopt(curl.value, CURLOPT_ACCEPT_ENCODING, "");
-        curl_easy_setopt(curl.value, CURLOPT_HTTPHEADER, header_list);
-        curl_easy_setopt(curl.value, CURLOPT_WRITEFUNCTION, write_string);
-        curl_easy_setopt(curl.value, CURLOPT_WRITEDATA, &payload);
-        curl_easy_setopt(curl.value, CURLOPT_NOPROGRESS, 0L);
-        curl_easy_setopt(curl.value, CURLOPT_XFERINFOFUNCTION, transfer_progress);
-        curl_easy_setopt(curl.value, CURLOPT_XFERINFODATA, &progress_context);
-        curl_easy_setopt(curl.value, CURLOPT_CONNECTTIMEOUT_MS, 10000L);
-        curl_easy_setopt(curl.value, CURLOPT_TIMEOUT, 0L);
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 8L);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, kUserAgent);
+        curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_string);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &payload);
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, transfer_progress);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress_context);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 10000L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
         if (!proxy.empty()) {
-            curl_easy_setopt(curl.value, CURLOPT_PROXY, proxy.c_str());
-            curl_easy_setopt(curl.value, CURLOPT_SSL_VERIFYPEER, 0L);
-            curl_easy_setopt(curl.value, CURLOPT_SSL_VERIFYHOST, 0L);
+            curl_easy_setopt(curl, CURLOPT_PROXY, proxy.c_str());
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
         }
 
-        const CURLcode result = curl_easy_perform(curl.value);
+        const CURLcode result = curl_easy_perform(curl);
         long response_code = 0;
-        curl_easy_getinfo(curl.value, CURLINFO_RESPONSE_CODE, &response_code);
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
         if (header_list) curl_slist_free_all(header_list);
         if (result == CURLE_ABORTED_BY_CALLBACK) {
             msg = "Operation aborted by user";
@@ -374,22 +430,28 @@ bool download_representation(
     std::function<bool(double, double)>& callback,
     long long& total_bytes,
     std::string& msg) {
+    if (callback && !callback(static_cast<double>(total_bytes), 0.0)) {
+        msg = "Operation aborted by user";
+        return false;
+    }
     const std::string partial_path = output_path + ".part";
-    std::error_code error;
-    std::filesystem::remove(std::filesystem::u8path(partial_path), error);
+    remove_utf8_file(partial_path);
     FILE* file = open_utf8_file(partial_path, "wb");
     if (!file) { msg = "cannot create encrypted output file"; return false; }
+    CurlHandle curl;
+    if (!curl.value) { std::fclose(file); msg = "curl init failed"; return false; }
 
     auto close_and_fail = [&] {
         std::fclose(file);
-        std::filesystem::remove(std::filesystem::u8path(partial_path), error);
+        remove_utf8_file(partial_path);
         return false;
     };
 
     const auto& segments = representation.segments;
     std::string init = substitute_template(segments.initialization, representation,
         segments.start_number, segments.timeline.front());
-    if (!append_url(resolve_url(mpd_url, init), file, total_bytes, headers, proxy, callback, msg)) {
+    if (!append_url(curl.value, resolve_url(mpd_url, init), file, total_bytes, headers, proxy, callback, msg)) {
+        msg = "initialization segment for representation " + representation.id + ": " + msg;
         return close_and_fail();
     }
 
@@ -397,17 +459,52 @@ bool download_representation(
         const long long number = segments.start_number + static_cast<long long>(index);
         const std::string media = substitute_template(segments.media, representation,
             number, segments.timeline[index]);
-        if (!append_url(resolve_url(mpd_url, media), file, total_bytes, headers, proxy, callback, msg)) {
+        if (!append_url(curl.value, resolve_url(mpd_url, media), file, total_bytes, headers, proxy, callback, msg)) {
+            msg = "media segment " + std::to_string(number) + " for representation " +
+                representation.id + ": " + msg;
             return close_and_fail();
         }
     }
 
     std::fclose(file);
-    std::filesystem::remove(std::filesystem::u8path(output_path), error);
-    error.clear();
-    std::filesystem::rename(std::filesystem::u8path(partial_path),
-        std::filesystem::u8path(output_path), error);
-    if (error) { msg = "cannot finalize encrypted output: " + error.message(); return false; }
+    std::string rename_error;
+    if (!rename_utf8_file(partial_path, output_path, rename_error)) {
+        msg = "cannot finalize encrypted output: " + rename_error;
+        return false;
+    }
+    return true;
+}
+
+std::vector<std::string> extract_pssh(const std::string& mpd) {
+    std::vector<std::string> values;
+    const std::regex expression(R"(<(?:[A-Za-z0-9_-]+:)?pssh\b[^>]*>\s*([^<\s]+)\s*</(?:[A-Za-z0-9_-]+:)?pssh\s*>)",
+        std::regex::icase);
+    for (std::sregex_iterator it(mpd.begin(), mpd.end(), expression), end; it != end; ++it) {
+        const std::string value = (*it)[1].str();
+        if (std::find(values.begin(), values.end(), value) == values.end()) values.push_back(value);
+    }
+    return values;
+}
+
+bool write_metadata(const std::string& path, const std::string& mpd_url,
+    const std::string& license_url, const std::vector<std::string>& pssh,
+    const std::string& video_path, const std::string& audio_path, std::string& msg) {
+    nlohmann::json metadata = {
+        {"encrypted", true},
+        {"decrypted", false},
+        {"mpd_url", mpd_url},
+        {"license_url", license_url},
+        {"pssh", pssh},
+        {"video_file", video_path},
+        {"audio_file", audio_path},
+        {"note", "Encrypted media only; no license challenge, content-key extraction or decryption was performed."}
+    };
+    const std::string payload = metadata.dump(2);
+    FILE* file = open_utf8_file(path, "wb");
+    if (!file) { msg = "cannot create DRM metadata file"; return false; }
+    const bool ok = std::fwrite(payload.data(), 1, payload.size(), file) == payload.size();
+    std::fclose(file);
+    if (!ok) { msg = "cannot write DRM metadata file"; return false; }
     return true;
 }
 }
@@ -417,6 +514,7 @@ bool EncryptedDashHelper::download(
     const std::string& output_base,
     const std::vector<std::string>& extra_headers,
     const std::string& proxy,
+    const std::string& license_url,
     std::function<bool(double, double)> on_progress,
     std::string& msg) {
     msg.clear();
@@ -447,6 +545,9 @@ bool EncryptedDashHelper::download(
 
     const std::string video_path = output_base + ".video.mp4";
     const std::string audio_path = output_base + ".audio.m4a";
+    const std::string metadata_path = output_base + ".drm.json";
+    const auto pssh = extract_pssh(mpd);
+    if (!write_metadata(metadata_path, mpd_url, license_url, pssh, video_path, audio_path, msg)) return false;
     long long bytes = 0;
     std::cout << "[DRM] Video representation: " << video->id << " (" << video->height << "p)" << std::endl;
     if (!download_representation(mpd_url, *video, video_path, extra_headers, proxy,

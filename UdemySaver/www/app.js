@@ -1,9 +1,9 @@
 const $ = s => document.querySelector(s);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function getJSON(url){
+async function getJSON(url, options={}){
     try {
-        const r = await fetch(url);
+        const r = await fetch(url, options);
         const txt = await r.text();
         try { return JSON.parse(txt) } catch { return { ok:false, raw:txt } }
     } catch(err) { 
@@ -69,6 +69,7 @@ const settingsBtn = $('#settingsBtn'), settingsPanel = $('#settingsPanel'), sett
 const optSubs = $('#optSubs'), optAssets = $('#optAssets'), optQuality = $('#optQuality');
 let userOpts = {subs:false, assets:false};
 const selectedCourses = new Map();
+const courseCollectionControllers = new Map();
 
 function updateSelectedUI(){
     if(downloadSelectedBtn)
@@ -430,7 +431,6 @@ async function enqueueLecture(course, lecture, idxInCourse, pref="720", opts={})
     const asset = lecture && lecture.asset; 
     if(!asset || asset.asset_type!=='Video') return {skipped:true}; 
     const picked = pickVideoSource(asset, pref); 
-    if(!picked) return {skipped:true}; 
 
     const base = { 
         course_id:course.id, course_title:course.title, 
@@ -440,12 +440,23 @@ async function enqueueLecture(course, lecture, idxInCourse, pref="720", opts={})
     }; 
 
     // Resolve video URLs on the server so its DRM check always runs before queueing.
-    const videoPayload = {...base, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)}-${picked.label}.mp4`, is_video: true, quality: pref};
+    // DRM lectures frequently expose no MP4/HLS URL in the curriculum response.
+    // Queue them anyway; the server resolves the lecture detail and encrypted MPD.
+    const sourceLabel = picked && picked.label ? picked.label : pref;
+    const videoPayload = {
+        ...base,
+        url: picked?.url || '',
+        media_license_token: asset.media_license_token || '',
+        drm_license_url: asset.media_license_url || asset.license_url || '',
+        filename:`${pad3(idxInCourse)} - ${safe(lecture.title)}-${sourceLabel}.mp4`,
+        is_video: true,
+        quality: pref
+    };
     
     const queueTasks = [];
     
     queueTasks.push(
-        fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(videoPayload)})
+        fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(videoPayload),signal:opts.signal})
             .then(r => r.json()).catch(()=>({ok:false}))
     );
 
@@ -456,7 +467,7 @@ async function enqueueLecture(course, lecture, idxInCourse, pref="720", opts={})
             const ext = (url.split(/[#?]/)[0].split('.').pop()||'vtt'); 
             const p = {...base, url, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)}.${lang}.${ext}`}; 
             
-            queueTasks.push(fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}));
+            queueTasks.push(fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p),signal:opts.signal}));
         } 
     } 
 
@@ -476,7 +487,7 @@ async function enqueueLecture(course, lecture, idxInCourse, pref="720", opts={})
             if(!url) continue;
             const p = {...base, filename:`${pad3(idxInCourse)} - ${safe(lecture.title)} - ${sanitizeFilename(name)}`, asset_id:a.id, url};
             
-            queueTasks.push(fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}));
+            queueTasks.push(fetch('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p),signal:opts.signal}));
         }
     }
     
@@ -492,7 +503,10 @@ async function enqueueLecture(course, lecture, idxInCourse, pref="720", opts={})
 }
 
 async function queueWholeCourse(course, preference="720"){ 
-    const opts = {subs: userOpts.subs, assets: userOpts.assets};
+    courseCollectionControllers.get(course.id)?.abort();
+    const controller = new AbortController();
+    courseCollectionControllers.set(course.id, controller);
+    const opts = {subs: userOpts.subs, assets: userOpts.assets, signal:controller.signal};
     showBusy('queue.collecting'); 
     try{ 
         toast(t('toast.collecting',{title: course.title||'Course'})); 
@@ -500,7 +514,9 @@ async function queueWholeCourse(course, preference="720"){
         let retryCount = 0;
 
         while(true){ 
-            const j = await getJSON(`/lectures?course_id=${course.id}&page=${page}`); 
+            if(controller.signal.aborted) break;
+            const j = await getJSON(`/lectures?course_id=${course.id}&page=${page}&page_size=200`, {signal:controller.signal});
+            if(controller.signal.aborted) break;
             if (!j || j.ok === false) {
                 if (retryCount < 3) {
                     retryCount++;
@@ -518,6 +534,7 @@ async function queueWholeCourse(course, preference="720"){
             if(chunk.length===0) break; 
             
             for(const lec of chunk){ 
+                if(controller.signal.aborted) break;
                 seen++; 
                 setBusyTextTextual(`${seen}/${knownTotal ?? '…'}`, lec.title || 'Section'); 
                 if(!lec || !lec.asset || lec.asset.asset_type!=='Video'){ skipped++; continue; } 
@@ -526,8 +543,9 @@ async function queueWholeCourse(course, preference="720"){
                 else if(res && res.ok) added++; 
                 else { skipped++; if(res && res.error) toast(res.error); }
                 if(seen%5===0) qTick(true); 
-                await delay(50);
+                await delay(5);
             } 
+            if(controller.signal.aborted) break;
             if(j.next) { page++; setBusyTextTextual(`${seen}/${knownTotal ?? '…'}`, "Loading..."); await delay(1500); } else break; 
         } 
         qTick(true); 
@@ -537,6 +555,8 @@ async function queueWholeCourse(course, preference="720"){
     } catch(err) {
         toast("An unexpected error occurred.");
     } finally { 
+        if(courseCollectionControllers.get(course.id) === controller)
+            courseCollectionControllers.delete(course.id);
         hideBusy(); 
     }
 }
@@ -576,6 +596,7 @@ async function qTick(force=false){
                 row.speed = (row.speed||0) + spd;
                 if(it.filename) row.active_files.push(it.filename);
             }
+            if(st==='failed' && it.message) row.failure_message = String(it.message);
         }
     }
     
@@ -601,7 +622,10 @@ async function qTick(force=false){
                 activeFileHtml = `<br><span class="active-file-text"><i class="spin" style="margin-right:4px;"></i> ${t('queue.active_file', {file: fileName + extra})}</span>`;
             }
             if (row.state === 'failed') {
-                activeFileHtml = `<br><span style="color: var(--danger); font-size: 11px; margin-top: 6px; display: inline-block; font-weight: 700;">⚠️ ${t('queue.failed')}</span>`;
+                const detail = String(row.failure_message || t('queue.failed'))
+                    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+                    .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+                activeFileHtml = `<br><span style="color: var(--danger); font-size: 11px; margin-top: 6px; display: inline-block; font-weight: 700;">⚠️ ${detail}</span>`;
             }
 
             let finalSub = `${row.done} / ${row.total} ${t('queue.sections')} • %${pct}${sizeTxt}${speedTxt}${activeFileHtml}`;
@@ -630,6 +654,7 @@ async function qTick(force=false){
             btn.addEventListener('click', async ()=>{
                 const cid = btn.getAttribute('data-cid');
                 const act = btn.getAttribute('data-act');
+                if(act === 'pause') courseCollectionControllers.get(Number(cid))?.abort();
                 fetch(`/queue/${act}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({course_id:Number(cid)}) }).catch(()=>{});
                 qTick(true);
             });

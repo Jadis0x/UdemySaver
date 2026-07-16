@@ -640,7 +640,7 @@ RequestHandler::handleLectures(int course_id, int page, int page_size) {
 			<< "/subscriber-curriculum-items/?page=" << page
 			<< "&page_size=" << page_size
 			<< "&fields[lecture]=asset,title,object_index,asset_type,supplementary_assets,download_url"
-			<< "&fields[asset]=stream_urls,download_urls,download_url,filename,asset_type,hls_url"
+		<< "&fields[asset]=stream_urls,download_urls,download_url,filename,asset_type,hls_url,media_sources,media_license_token,course_is_drmed,is_drmed"
 			<< "&fields[chapter]=title,object_index"
 			<< "&fields[supplementary_asset]=id,title,asset_type,download_urls,download_url,external_url,filename";
 
@@ -662,7 +662,9 @@ RequestHandler::handleLectures(int course_id, int page, int page_size) {
 				const std::string klass = it.value("_class", it.value("type", ""));
 				if (klass == "chapter")
 				{
-					cur_section += 1;
+					// object_index is the course-wide section number. A local counter
+					// restarts on every API page and produces duplicate 01/02 folders.
+					cur_section = it.value("object_index", cur_section + 1);
 					cur_section_title = it.value("title", "");
 					continue;
 				}
@@ -710,11 +712,18 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 		bool is_video = in.value("is_video", false);
 		std::string pref = in.value("quality", "1080");
 		std::string in_url = in.value("url", std::string{});
+		std::string drm_license_url;
+		const std::string media_license_token = in.value("media_license_token", std::string{});
+		drm_license_url = in.value("drm_license_url", std::string{});
+		if (drm_license_url.empty() && !media_license_token.empty()) {
+			drm_license_url = api_base_ +
+				"/media-license-server/validate-auth-token?drm_type=widevine&auth_token=" + media_license_token;
+		}
 
-		if (is_video && course_id_val > 0 && lecture_id > 0) {
-			// Never trust a client-provided video URL: resolving here guarantees DRM
-			// metadata is checked before the job enters the queue.
-			in_url = resolve_lecture_stream(course_id_val, lecture_id, pref);
+		if (is_video && in_url.empty() && course_id_val > 0 && lecture_id > 0) {
+			// Some curriculum responses omit media sources. Only those lectures need
+			// the slower per-lecture detail request.
+			in_url = resolve_lecture_stream(course_id_val, lecture_id, pref, &drm_license_url);
 		}
 		else if (in_url.empty())
 		{
@@ -727,6 +736,7 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 		Job j;
 		j.id = next_id_++;
 		j.url = in_url;
+		j.drm_license_url = std::move(drm_license_url);
 		j.filename = in.value("filename", "");
 
 		j.course_id = course_id_val;
@@ -761,7 +771,10 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 			auto abs_dir = std::filesystem::absolute(std::filesystem::u8path(j.out_path_dir));
 			std::string abs_dir_str = Helper::path_to_utf8(abs_dir);
 
-			int max_filename_len = 250 - static_cast<int>(abs_dir_str.length()) - 6;
+			std::string lower_input_url = j.url;
+			std::transform(lower_input_url.begin(), lower_input_url.end(), lower_input_url.begin(), ::tolower);
+			const int generated_suffix_reserve = lower_input_url.find(".mpd") != std::string::npos ? 32 : 6;
+			int max_filename_len = 250 - static_cast<int>(abs_dir_str.length()) - generated_suffix_reserve;
 
 			if (max_filename_len < 10) max_filename_len = 10;
 
@@ -785,6 +798,19 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 			auto final_path = out_dir / std::filesystem::u8path(j.filename);
 
 			bool exists_final = std::filesystem::exists(final_path, fec);
+			std::filesystem::path existing_path = final_path;
+			std::string lower_url = j.url;
+			std::transform(lower_url.begin(), lower_url.end(), lower_url.begin(), ::tolower);
+			if (!exists_final && lower_url.find(".mpd") != std::string::npos) {
+				auto encrypted_base = final_path;
+				encrypted_base.replace_extension();
+				encrypted_base += ".encrypted";
+				auto encrypted_video = std::filesystem::u8path(Helper::path_to_utf8(encrypted_base) + ".video.mp4");
+				auto encrypted_audio = std::filesystem::u8path(Helper::path_to_utf8(encrypted_base) + ".audio.m4a");
+				exists_final = std::filesystem::exists(encrypted_video, fec) &&
+					std::filesystem::exists(encrypted_audio, fec);
+				if (exists_final) existing_path = std::move(encrypted_video);
+			}
 			if (exists_final)
 			{
 				json out2;
@@ -792,7 +818,7 @@ RequestHandler::handleQueueAdd(const std::string& body) {
 				out2["queued"] = false;
 				out2["skipped"] = true;
 				out2["reason"] = "exists";
-				out2["path"] = Helper::path_to_utf8(final_path);
+				out2["path"] = Helper::path_to_utf8(existing_path);
 				return { status::ok, out2.dump() };
 			}
 		}
@@ -954,9 +980,10 @@ std::pair<boost::beast::http::status, std::string> RequestHandler::handleQueuePa
 			for (auto& q : queue_)
 			{
 				if (q.course_id == course_id &&
-					q.state == Job::State::Queued)
+					q.state != Job::State::Done)
 				{
 					q.state = Job::State::Paused;
+					q.message = "paused";
 				}
 			}
 		}
@@ -1315,12 +1342,14 @@ void RequestHandler::append_auth_headers_for_url(const std::string& url, std::ve
 	headers.push_back(cookie_header);
 }
 
-std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id, const std::string& prefer_quality) {
+std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id,
+	const std::string& prefer_quality, std::string* drm_license_url) {
+	if (drm_license_url) drm_license_url->clear();
 	std::ostringstream url;
 	url << api_base_
 		<< "/api-2.0/users/me/subscribed-courses/" << course_id
 		<< "/lectures/" << lecture_id
-		<< "?fields[asset]=stream_urls,download_urls,download_url,captions,title,filename,data,body,hls_url,media_sources,asset_type,length,media_license_token,course_is_drmed,thumbnail_sprite,slides,slide_urls,external_url"
+		<< "?fields[asset]=stream_urls,download_urls,download_url,captions,title,filename,data,body,hls_url,media_sources,asset_type,length,media_license_token,media_license_url,license_url,course_is_drmed,thumbnail_sprite,slides,slide_urls,external_url"
 		<< "&fields[lecture]=asset,supplementary_assets,description,download_url,is_free,last_watched_second";
 
 	auto body = udemy_get(url.str(), 15000);
@@ -1332,25 +1361,43 @@ std::string RequestHandler::resolve_lecture_stream(int course_id, int lecture_id
 	auto& a = j["asset"];
 	if (is_drm_protected_asset(j) || is_drm_protected_asset(a))
 	{
+		if (drm_license_url) {
+			*drm_license_url = a.value("media_license_url", a.value("license_url", std::string{}));
+			const std::string license_token = a.value("media_license_token", std::string{});
+			if (drm_license_url->empty() && !license_token.empty()) {
+				*drm_license_url = api_base_ +
+					"/media-license-server/validate-auth-token?drm_type=widevine&auth_token=" + license_token;
+			}
+		}
 		auto find_encrypted_dash_source = [](const json& asset) -> std::string
 			{
-				if (!asset.contains("media_sources") || !asset["media_sources"].is_array()) return {};
-				for (const auto& source : asset["media_sources"])
-				{
-					if (!source.is_object()) continue;
-					std::string src = source.value("src", source.value("file", source.value("url", std::string{})));
-					std::string type = source.value("type", std::string{});
-					std::transform(type.begin(), type.end(), type.begin(),
-						[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-					std::string lower_src = src;
-					std::transform(lower_src.begin(), lower_src.end(), lower_src.begin(),
-						[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-					if (!src.empty() && (lower_src.find(".mpd") != std::string::npos ||
-						type.find("dash") != std::string::npos || type.find("mpd") != std::string::npos)) {
-						return src;
+				std::function<std::string(const json&)> visit = [&](const json& node) -> std::string {
+					if (node.is_object()) {
+						std::string type = node.value("type", std::string{});
+						std::transform(type.begin(), type.end(), type.begin(),
+							[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+						for (const char* key : { "src", "file", "url" }) {
+							auto it = node.find(key);
+							if (it == node.end() || !it->is_string()) continue;
+							const std::string source = it->get<std::string>();
+							std::string lower = source;
+							std::transform(lower.begin(), lower.end(), lower.begin(),
+								[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+							if (lower.find(".mpd") != std::string::npos || type.find("dash") != std::string::npos ||
+								type.find("mpd") != std::string::npos) return source;
+						}
+						for (const auto& item : node.items()) {
+							if (auto found = visit(item.value()); !found.empty()) return found;
+						}
 					}
-				}
-				return {};
+					else if (node.is_array()) {
+						for (const auto& item : node) {
+							if (auto found = visit(item); !found.empty()) return found;
+						}
+					}
+					return {};
+				};
+				return visit(asset);
 			};
 
 		std::string encrypted_dash_url = find_encrypted_dash_source(a);
@@ -1987,7 +2034,7 @@ void RequestHandler::worker_loop() {
 					safe_headers.push_back(h);
 				}
 				ok = EncryptedDashHelper::download(j.url, Helper::path_to_utf8(target_path),
-					safe_headers, proxy_, on_progress, msg);
+					safe_headers, proxy_, j.drm_license_url, on_progress, msg);
 			}
 			else if (is_hls)
 			{
@@ -2250,6 +2297,6 @@ void RequestHandler::worker_loop() {
 				}
 			}
 		}
-		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	}
 }
