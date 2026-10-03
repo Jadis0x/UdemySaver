@@ -537,27 +537,45 @@ RequestHandler::handleCourses(int page, int page_size, const std::string& query)
 
 	try
 	{
-		std::ostringstream url;
-		url << api_base_
-			<< "/api-2.0/users/me/subscribed-courses/?page=" << page
-			<< "&page_size=" << page_size
-			<< "&fields[course]=@min,title,headline,url,image_480x270,image_480x270@2x,image_240x135,image_240x135@2x,image_125_H,image_200_H,visible_instructors";
+		auto build_url = [&](const std::string& prefix) {
+			std::ostringstream u;
+			u << api_base_ << prefix << "?page=" << page
+			  << "&page_size=" << page_size
+			  << "&fields[course]=@min,title,headline,url,image_480x270,image_480x270@2x,image_240x135,image_240x135@2x,image_125_H,image_200_H,visible_instructors";
+			if (!query.empty()) u << "&search=" << query;
+			else u << "&ordering=-last_accessed";
+			return u.str();
+		};
 
-		if (!query.empty()) {
-			url << "&search=" << query;
+		std::string body;
+		std::string last_err;
+		// Primary: new enrollment API (old returns count 0 since ~2026). Fallback keeps old during rollout.
+		for (const char* prefix : {"/api-2.0/users/me/subscription-course-enrollments/",
+		                           "/api-2.0/users/me/subscribed-courses/"}) {
+			try {
+				body = udemy_get(build_url(prefix), 15000);
+				break;
+			} catch (const std::exception& e) {
+				last_err = e.what();
+				// 404 for unknown prefix (e.g. lecture stays on old) -> try fallback
+				if (std::string(e.what()).find("404") == std::string::npos &&
+				    std::string(e.what()).find("Not found") == std::string::npos) {
+					// For courses listing old returns 200 empty, so we only fallback on exception
+					// If primary succeeded but returned empty, still keep it (new is correct)
+					throw;
+				}
+			}
 		}
-		else {
-			url << "&ordering=-last_accessed";
-		}
-
-		auto body = udemy_get(url.str(), 15000);
+		if (body.empty() && !last_err.empty()) throw std::runtime_error(last_err);
 		json raw = json::parse(body);
 
 		json courses = json::array();
 		if (raw.contains("results") && raw["results"].is_array())
 		{
-			for (auto& c : raw["results"])
+			for (auto c : raw["results"])
 			{
+				// New enrollment API may wrap course in enrollment object (fallback)
+				if (c.contains("course") && c["course"].is_object()) c = c["course"];
 				auto pick = [&](const char* key)->std::string
 					{
 						if (c.contains(key) && c[key].is_string())
