@@ -32,6 +32,13 @@ set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(HTTP_ONLY ON CACHE BOOL "" FORCE)
 set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+if(APPLE)
+    # Use Apple IDN (icucore) instead of Homebrew libidn2. This avoids a
+    # non-system -lidn2 without -L propagation (ld: library 'idn2' not found)
+    # and survives brew upgrades while keeping punycode support.
+    set(USE_LIBIDN2 OFF CACHE BOOL "" FORCE)
+    set(USE_APPLE_IDN ON CACHE BOOL "" FORCE)
+endif()
 if(WIN32)
     # Use the TLS implementation built into Windows. This avoids OpenSSL and
     # keeps the fetched curl build completely independent from vcpkg.

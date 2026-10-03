@@ -13,8 +13,8 @@ extern "C" {
 #include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/mathematics.h>
-#include <iostream>
 }
+#include <iostream>
 
 bool FFmpegHelper::convert_m3u8_to_ts(
 	const std::string& url,
